@@ -73,12 +73,15 @@ Conferência rápida: a soma do escaneado com o Docker e o "reservado/sem acesso
 
 ## 6. Gerar o pacote `.deb`
 
-Esta parte é da Etapa 7; ícone e nome do app ainda são os do template.
-
 ```bash
 npm run tauri build
 sudo apt install ./target/release/bundle/deb/*.deb
 ```
+
+- O pacote se chama `storage-looker` e instala o binário `/usr/bin/storage-looker` e o atalho "Storage Looker" no menu do GNOME (categoria Utilitários).
+- O bundle fica na pasta `target/` da raiz, porque o projeto é um workspace Cargo.
+- Para trocar o ícone: `npx tauri icon caminho/para/logo.png` (PNG quadrado com fundo transparente) regenera `src-tauri/icons/`.
+- Para desinstalar: `sudo apt remove storage-looker`. O cache do último scan fica em `~/.cache/storage-lkr/` e pode ser apagado à mão.
 
 ## 7. Onde está cada coisa
 
@@ -87,6 +90,8 @@ sudo apt install ./target/release/bundle/deb/*.deb
 | `crates/scanner/` | Motor: walk, classificação, Docker, `statvfs`. Sem Tauri |
 | `crates/scanner/src/bin/scan.rs` | CLI de benchmark |
 | `src-tauri/src/state.rs` | Ciclo do scan e eventos (`ScanEvent`) |
+| `src-tauri/src/state/cleanup.rs` | Ações de limpeza e a validação delas |
+| `src-tauri/src/state/cache.rs` | Cache do último scan (`~/.cache/storage-lkr/last.json`) |
 | `src-tauri/src/commands.rs` | Commands chamados pelo frontend |
 | `src-tauri/build.rs` + `capabilities/default.json` | Quais commands a janela pode chamar |
 | `src/lib/api.ts` | Funções e tipos TypeScript dos commands |

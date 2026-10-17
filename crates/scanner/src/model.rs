@@ -99,6 +99,8 @@ pub struct ScanResult {
     pub denied_dirs: u64,
     pub files: u64,
     pub elapsed_ms: u64,
+    /// Fim do scan em segundos Unix: a UI mostra "há 2 h" para um resultado do cache.
+    pub finished_at: i64,
 }
 
 impl ScanResult {
@@ -206,6 +208,7 @@ mod tests {
             denied_dirs: 0,
             files: 0,
             elapsed_ms: 0,
+            finished_at: 0,
         }
     }
 

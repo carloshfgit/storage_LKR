@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-app",
+  "productName": "Storage Looker",
   "version": "0.1.0",
-  "identifier": "com.carloshf.tauri-app",
+  "identifier": "com.carloshf.storage-looker",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,9 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "tauri-app",
-        "width": 800,
-        "height": 600
+        "title": "Storage Looker",
+        "width": 820,
+        "height": 680,
+        "minWidth": 560,
+        "minHeight": 480,
+        "center": true
       }
     ],
     "security": {
@@ -23,13 +26,19 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "deb"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
-  }
+    ],
+    "category": "Utility",
+    "shortDescription": "Veja o que ocupa o disco e libere espaço com segurança",
+    "longDescription": "Barra de armazenamento no estilo iOS/Android para o Ubuntu: fotos, vídeos, áudio, documentos, apps/sistema e outros, com a Lixeira e o Docker. Nada é apagado direto: os arquivos vão para a Lixeira."
+  },
+  "mainBinaryName": "storage-looker"
 }

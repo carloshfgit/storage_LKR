@@ -188,12 +188,19 @@ Total + restante = `df` por construção. O restante (106 GB) é real: são dire
 ---
 
 ## Etapa 7 — Polimento e pacote
-- [ ] Cache do último scan em `~/.cache/storage-lkr/last.json`: abre instantâneo e reescaneia em background.
-- [ ] Ícone do app, título da janela e tamanho mínimo.
-- [ ] Animações finas: entrada do detalhe e hover nos segmentos com tooltip.
-- [ ] `npm run tauri build` → `.deb` → `sudo apt install ./src-tauri/target/release/bundle/deb/*.deb`.
+- [x] Cache do último scan em `~/.cache/storage-lkr/last.json`: abre instantâneo e reescaneia em background (DECISIONS D35).
+- [x] Ícone do app, título da janela e tamanho mínimo: "Storage Looker", 820×680, mínimo 560×480 (D36).
+- [x] Animações finas: entrada do detalhe e hover nos segmentos com tooltip.
+- [x] `npm run tauri build` → `.deb` → `sudo apt install ./target/release/bundle/deb/*.deb`.
 
 **Pronto quando:** o app aparece no menu do GNOME, abre em menos de 1 s mostrando o último scan e atualiza sozinho.
+
+**Resultado (17/10/2026):**
+- Cache salvo a cada mudança do resultado (`done`, `docker` e ações) e carregado por `AppState::with_cache`. Os testes cobrem o caminho completo (scan → cache → app novo com o mesmo resultado, Docker e `$HOME`) e o cache ausente, corrompido ou de outra versão.
+- `ScanResult` ganhou `finished_at`, para a UI mostrar "análise de há 2 h".
+- Ícones gerados com `npx tauri icon logo-storage-looker-sf.png`. Pacote `storage-looker`, binário `/usr/bin/storage-looker`, categoria Utilitários.
+- Workspace: 49 testes passam, clippy limpo, `npm run check` sem erros.
+- ⏳ **Falta a conferência**, que precisa ser feita por você: instalar o `.deb`, abrir pelo menu do GNOME e ver o último scan aparecer na hora, com o "Atualizando…" em seguida.
 
 ---
 

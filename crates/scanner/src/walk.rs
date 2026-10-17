@@ -6,7 +6,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use jwalk::{Parallelism, WalkDirGeneric};
 
@@ -179,6 +179,9 @@ pub fn scan(
         denied_dirs,
         files,
         elapsed_ms: started.elapsed().as_millis() as u64,
+        finished_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64),
     })
 }
 

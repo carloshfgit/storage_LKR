@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "allow-disk-info",
+    "allow-last-scan",
     "allow-start-scan",
     "allow-cancel-scan",
     "allow-category-files",

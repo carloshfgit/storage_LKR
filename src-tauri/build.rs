@@ -2,6 +2,7 @@
 /// (`allow-<command>` em `capabilities/default.json`), em vez de liberar todos por padrão.
 const COMMANDS: &[&str] = &[
     "disk_info",
+    "last_scan",
     "start_scan",
     "cancel_scan",
     "category_files",

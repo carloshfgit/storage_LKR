@@ -1,4 +1,6 @@
-# storage_LKR
+# Storage Looker
+
+<img src="logo-storage-looker-sf.png" alt="" width="96" align="right">
 
 Gerenciador de armazenamento para Ubuntu no estilo iOS/Android: uma barra horizontal única dividida por cor, com categorias por tipo de arquivo e ações para liberar espaço com segurança.
 
@@ -37,7 +39,7 @@ O passo a passo completo, com pré-requisitos, a CLI de benchmark, o build do `.
 | 4. Tela principal | ✅ | Barra ao vivo, legenda e tema claro/escuro (falta a conferência visual) |
 | 5. Detalhe da categoria | ✅ | Maiores arquivos, "Abrir na pasta" e cards Docker/Lixeira (falta a conferência visual) |
 | 6. Ações de limpeza | ✅ | Lixeira, esvaziar e prune do Docker, validados no Rust (falta a conferência manual) |
-| 7. Polimento e pacote `.deb` | | |
+| 7. Polimento e pacote `.deb` | ✅ | Nome e ícone, abertura com o último scan, tooltip e animações (falta instalar e conferir) |
 
 ## Documentação
 

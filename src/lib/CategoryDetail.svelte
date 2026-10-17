@@ -25,6 +25,7 @@
     result,
     dockerPending,
     total,
+    version,
     onback,
     onupdate,
   }: {
@@ -32,6 +33,8 @@
     result: ScanResult;
     dockerPending: boolean;
     total: number;
+    /** Muda a cada scan concluído: a lista é recarregada do resultado novo. */
+    version: number;
     onback: () => void;
     /** Recebe o resultado atualizado pelo Rust depois de cada ação. */
     onupdate: (result: ScanResult) => void;
@@ -61,6 +64,7 @@
   $effect(() => {
     const requested = key;
     reload;
+    version;
     untrack(() => selection.clear());
     files = null;
     loadError = "";

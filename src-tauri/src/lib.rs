@@ -3,15 +3,16 @@ mod state;
 
 use std::sync::Arc;
 
-use state::AppState;
+use state::{AppState, default_cache_path};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(Arc::new(AppState::default()))
+        .manage(Arc::new(AppState::with_cache(default_cache_path())))
         .invoke_handler(tauri::generate_handler![
             commands::disk_info,
+            commands::last_scan,
             commands::start_scan,
             commands::cancel_scan,
             commands::category_files,

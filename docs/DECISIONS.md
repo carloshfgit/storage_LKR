@@ -42,6 +42,8 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D32](#d32) | Docker com tamanho e liberável por tipo | ✅ | 5 |
 | [D33](#d33) | Validação do `move_to_trash`: caminho inalterado e veredito na lista | ✅ | 6 |
 | [D34](#d34) | Ações devolvem o resultado atualizado; liberado medido pelo `statvfs` | ✅ | 6 |
+| [D35](#d35) | Abrir com o último scan e atualizar em segundo plano | ✅ | 7 |
+| [D36](#d36) | Nome "Storage Looker" e pacote só `.deb` | ✅ | 7 |
 
 ---
 
@@ -401,4 +403,31 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 - O `statvfs` é o que o `df` e o GNOME mostram. O tamanho que o Docker relata é lógico (D15), e o que a Lixeira guarda pode ter hardlinks, então somar tamanhos daria outro número.
 
 **Descartado:** reescanear depois de cada ação. Seria exato, mas levaria ~2 s e zeraria a barra (D30) a cada clique.
+
+---
+
+## Polimento e pacote
+
+### D35 — Abrir com o último scan e atualizar em segundo plano <a id="d35"></a>
+**Decisão:** o app salva o último resultado em `~/.cache/storage-lkr/last.json` a cada mudança. Ao abrir, mostra esse resultado na hora e reescaneia **em segundo plano**: a barra continua no resultado anterior até o `done` e então anima até os valores novos. O "Reescanear" manual continua zerando a barra (D30).
+
+**Por quê:**
+- O scan com cache frio leva ~12 s, justamente na primeira abertura depois do boot. Com o resultado anterior, a tela é útil em menos de 1 s.
+- Zerar a barra na abertura jogaria fora o cache que acabou de aparecer. Já o "Reescanear" é um pedido explícito, e ver a barra crescer confirma que o scan está andando.
+- O `home` vai no arquivo à parte do `ScanResult`, para as ações validarem contra o mesmo `$HOME` da classificação.
+
+**Detalhes:**
+- O "Livre" não é relido no início do scan em segundo plano: ele precisa continuar batendo com as categorias na tela. O disco novo chega com o `done`.
+- O detalhe já funciona com o cache, mas as ações esperam o scan terminar (D24, `running`).
+
+**Descartado:** guardar o cache em `~/.local/share` (não é dado do usuário: pode ser apagado sem perda) ou no diretório do app derivado do `identifier` (o nome do diretório mudaria com o identificador).
+
+### D36 — Nome "Storage Looker" e pacote só `.deb` <a id="d36"></a>
+**Decisão:**
+- Nome do produto e título da janela: **Storage Looker**, com o ícone `logo-storage-looker-sf.png`.
+- Binário e pacote: `storage-looker`; crate `storage-looker` (lib `storage_looker_lib`); identificador `com.carloshf.storage-looker`.
+- O diretório do cache continua `storage-lkr`, como no planejamento ("lkr" de looker).
+- `bundle.targets = ["deb"]`.
+
+**Por quê:** o nome com espaço fica só no que o usuário vê; arquivos e pacotes ficam sem espaço. Os outros formatos (AppImage, RPM) não são o alvo do MVP. O AppImage, em particular, baixa ferramentas extras durante o build.
 

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use scanner::{
-    Category, DEFAULT_DOCKER_TIMEOUT, DiskInfo, DockerTarget, ScanOptions, docker_usage,
+    Category, DEFAULT_DOCKER_TIMEOUT, DiskInfo, DockerTarget, ScanOptions, ScanResult, docker_usage,
 };
 use tauri::State;
 use tauri::ipc::Channel;
@@ -18,6 +18,12 @@ const SCAN_ROOT: &str = "/";
 #[tauri::command]
 pub fn disk_info() -> Result<DiskInfo, String> {
     scanner::disk_info(Path::new(SCAN_ROOT)).map_err(|e| e.to_string())
+}
+
+/// Último resultado conhecido; ao abrir o app, é o que estava no cache.
+#[tauri::command]
+pub fn last_scan(state: State<'_, Arc<AppState>>) -> Option<ScanResult> {
+    state.last_result()
 }
 
 #[tauri::command]

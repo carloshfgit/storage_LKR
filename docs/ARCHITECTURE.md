@@ -52,7 +52,8 @@ storage_LKR/
 │       ├── main.rs  lib.rs    # lib.rs: registra AppState e os commands
 │       ├── commands.rs        # commands finos, só repassam ao AppState
 │       ├── state.rs           # AppState + ScanEvent: ciclo do scan, testável sem Tauri
-│       └── state/cleanup.rs   # ações de limpeza e a validação delas (Etapa 6)
+│       ├── state/cleanup.rs   # ações de limpeza e a validação delas (Etapa 6)
+│       └── state/cache.rs     # último resultado em ~/.cache/storage-lkr (Etapa 7)
 └── src/                       # SvelteKit em modo SPA (adapter-static, ssr = false)
     ├── app.html
     ├── routes/+layout.ts  routes/+page.svelte   # tela única; orquestra o estado
@@ -95,6 +96,7 @@ pub struct ScanResult {
     unaccounted_bytes: u64,               // "Reservado / sem acesso" → somado em AppsSystem
     denied_dirs: u64,
     elapsed_ms: u64,
+    finished_at: i64,                     // fim do scan (unix s): "há 2 h" do cache
 }
 ```
 
@@ -212,6 +214,7 @@ pub struct DockerUsage { images: DockerItem, containers: DockerItem, volumes: Do
 | Command | Assinatura (Rust) | Observação |
 |---|---|---|
 | `disk_info` | `() -> DiskInfo` | Instantâneo: a UI desenha "Livre" antes mesmo do scan |
+| `last_scan` | `() -> Option<ScanResult>` | Último resultado conhecido; ao abrir, o do cache (§9) |
 | `start_scan` | `(on_event: Channel<ScanEvent>) -> ()` | `std::thread::spawn`. Recusa se já houver um scan rodando. Depois do `Done`, consulta o Docker e emite `Docker` |
 | `cancel_scan` | `() -> ()` | Seta o `AtomicBool` |
 | `category_files` | `(cat: Category) -> Vec<FileItem>` | Top-N do último resultado. `FileItem` é o `FileEntry` com `trashable`, calculado pela mesma validação do `move_to_trash` |
@@ -273,7 +276,7 @@ AppState { last: Mutex<Option<ScanResult>>, cancel: Arc<AtomicBool>, running: At
 | Componente | Responsabilidade |
 |---|---|
 | `routes/+page.svelte` | Orquestra o estado (`idle` / `scanning` / `done` / `cancelled` / `error`), monta os segmentos e alterna entre a tela principal e o detalhe. A tela principal fica escondida, não desmontada, para a barra não refazer a animação na volta. Escaneia ao abrir |
-| `StorageBar.svelte` | Barra única, em ordem fixa: as 6 categorias, a faixa "ainda não contado" e "Livre" na ponta direita. Cada largura é um `Tween` (600 ms, `cubicOut`) redirecionado a cada `progress`. Vãos de 2px com a cor do card separam os segmentos. Clicar num segmento abre o detalhe |
+| `StorageBar.svelte` | Barra única, em ordem fixa: as 6 categorias, a faixa "ainda não contado" e "Livre" na ponta direita. Cada largura é um `Tween` (600 ms, `cubicOut`) redirecionado a cada `progress`. Vãos de 2px com a cor do card separam os segmentos. Clicar num segmento abre o detalhe. Hover ou foco mostra um tooltip com nome, tamanho e porcentagem, inclusive em "Livre" |
 | `Legend.svelte` | Linhas com bolinha de cor, nome, tamanho e porcentagem do disco, ordenadas por bytes (`animate:flip`) e com "Livre" por último. Apps/Sistema traz a composição: Docker e reservado/sem acesso |
 | `CategoryDetail.svelte` | Aberto ao clicar num segmento da barra ou numa linha da legenda (só com um resultado completo). Mostra o total, a porcentagem e a contagem, e lista o top-N de `category_files`, ordenado por tamanho ou por data. Em Outros aparece o card "Lixeira"; em Apps/Sistema, os cards "Docker" (imagens, containers, volumes e build cache, cada um com tamanho, quantidade e liberável; some sem Docker) e "Reservado / sem acesso". Voltar: botão ou `Esc`. Checkbox nos arquivos com `trashable`, barra fixa no rodapé com o total selecionado e "Mover para a Lixeira". Card Lixeira com "Esvaziar Lixeira"; card Docker com "Limpar build cache" e "Remover imagens não usadas", sem botão para volumes. As ações destrutivas passam pelo `ConfirmDialog`, com o tamanho no título. O resultado aparece num aviso: o que foi movido ou liberado, e os recusados com o motivo |
 | `ConfirmDialog.svelte` | `<dialog>` modal. Esc cancela |
@@ -304,6 +307,7 @@ AppState { last: Mutex<Option<ScanResult>>, cancel: Arc<AtomicBool>, running: At
 
 - Claro e escuro via `prefers-color-scheme`. Fundo e card como no iOS: `#F2F2F7`/`#FFFFFF` no claro e `#000000`/`#1C1C1E` no escuro.
 - `prefers-reduced-motion` zera as animações.
+- Troca de tela: o detalhe entra pela direita e a tela principal volta pela esquerda (0,28 s, `--ease`), com animações CSS que recomeçam quando o elemento sai do `display: none`.
 - Fonte do sistema: `system-ui, "Ubuntu", "Cantarell"`.
 - `--radius: 14px`, cards com `box-shadow` suave e transições de 0,6 s com easing "iOS" (`cubic-bezier(.2,.8,.2,1)`).
 
@@ -311,7 +315,11 @@ AppState { last: Mutex<Option<ScanResult>>, cancel: Arc<AtomicBool>, running: At
 
 ## 9. Persistência (Etapa 7)
 
-O último `ScanResult` é salvo em `~/.cache/storage-lkr/last.json`. Ao abrir, o app mostra esse resultado na hora, com a marca "há 2 h", e dispara um novo scan em background.
+O último `ScanResult` é salvo em `$XDG_CACHE_HOME/storage-lkr/last.json` (normalmente `~/.cache/…`) por `state/cache.rs`:
+- **Quando:** a cada mudança do resultado no `AppState`: no `done`, no `docker` e depois de cada ação de limpeza. A escrita vai para um `.tmp` e é renomeada, com o lock do resultado em mãos.
+- **Formato:** `{ version, home, result }`. O `home` vai à parte porque o `ScanResult` não o serializa, e as ações validam contra ele. Um arquivo corrompido ou de outra `version` é ignorado.
+- **Ao abrir:** `AppState::with_cache` carrega o arquivo, e o command `last_scan` o entrega à UI. A tela aparece na hora com esse resultado, e um scan começa **em segundo plano**: a barra fica no resultado do cache, e o status mostra "Atualizando… · análise de há 2 h". No `done`, a barra anima do valor antigo para o novo, sem passar pelo zero (DECISIONS D35).
+- Com o resultado do cache, o detalhe já funciona. As ações são recusadas até o scan terminar (`running`), e a validação do `move_to_trash` cobre arquivos que sumiram desde então.
 
 ## 10. Fora do MVP
 

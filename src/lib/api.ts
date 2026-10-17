@@ -56,6 +56,8 @@ export interface ScanResult {
   denied_dirs: number;
   files: number;
   elapsed_ms: number;
+  /** Fim do scan em segundos Unix. */
+  finished_at: number;
 }
 
 /** Ordem: `progress`* → (`done` → `docker`) | `cancelled` | `error`. */
@@ -68,6 +70,11 @@ export type ScanEvent =
 
 export function diskInfo(): Promise<DiskInfo> {
   return invoke("disk_info");
+}
+
+/** Último resultado conhecido: ao abrir o app, o que estava no cache (`~/.cache/storage-lkr`). */
+export function lastScan(): Promise<ScanResult | null> {
+  return invoke("last_scan");
 }
 
 /** Retorna assim que o scan começa; os eventos chegam por `onEvent`. */

@@ -103,6 +103,9 @@ impl AppState {
                 }),
             }
         }
+        if moved > 0 {
+            self.persist(result);
+        }
         Ok(TrashReport {
             moved,
             moved_bytes,
@@ -165,6 +168,7 @@ impl AppState {
         let result = last.as_mut().ok_or(ActionError::NoScan)?;
         update(result, cleaned);
         result.set_disk(after);
+        self.persist(result);
         Ok(Cleanup {
             freed_bytes,
             result: result.clone(),

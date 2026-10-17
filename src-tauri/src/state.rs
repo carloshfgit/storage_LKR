@@ -2,15 +2,17 @@
 //! (os commands só repassam eventos para o `Channel`), o que permite testar tudo
 //! com `cargo test`.
 
+mod cache;
 mod cleanup;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use scanner::{DockerUsage, ScanError, ScanOptions, ScanProgress, ScanResult, scan};
 use serde::Serialize;
 
+pub use cache::default_path as default_cache_path;
 pub use cleanup::{Cleanup, FileItem, TrashReport};
 
 /// Mensagens enviadas ao frontend durante uma varredura, nesta ordem:
@@ -49,9 +51,20 @@ pub struct AppState {
     running: AtomicBool,
     /// Incrementa a cada varredura; descarta o resultado do Docker de uma varredura antiga.
     generation: AtomicU64,
+    /// Onde o último resultado é salvo a cada mudança. `None` nos testes.
+    cache: Option<PathBuf>,
 }
 
 impl AppState {
+    /// Começa com o resultado salvo em `cache`, se houver um válido.
+    pub fn with_cache(cache: Option<PathBuf>) -> Self {
+        Self {
+            last: Mutex::new(cache.as_deref().and_then(cache::load)),
+            cache,
+            ..Default::default()
+        }
+    }
+
     /// Inicia a varredura numa thread própria e retorna na hora. `docker` roda depois do
     /// `done`; um novo scan pode começar enquanto ele ainda está rodando.
     pub fn start_scan(
@@ -75,7 +88,10 @@ impl AppState {
 
             match outcome {
                 Ok(result) => {
-                    *state.lock_last() = Some(result.clone());
+                    let mut last = state.lock_last();
+                    state.persist(&result);
+                    *last = Some(result.clone());
+                    drop(last);
                     send(ScanEvent::Done { result });
                 }
                 Err(ScanError::Cancelled) => return send(ScanEvent::Cancelled),
@@ -93,6 +109,7 @@ impl AppState {
                 return;
             }
             result.apply_docker(usage.clone());
+            state.persist(result);
             send(ScanEvent::Docker {
                 usage,
                 docker_bytes: result.docker_bytes,
@@ -106,7 +123,6 @@ impl AppState {
         self.cancel.store(true, Ordering::SeqCst);
     }
 
-    #[cfg(test)]
     pub fn last_result(&self) -> Option<ScanResult> {
         self.lock_last().clone()
     }
@@ -120,6 +136,16 @@ impl AppState {
                 .values()
                 .any(|c| c.top.iter().any(|f| f.path == path))
         })
+    }
+
+    /// Salva o resultado no cache. Chamar com o lock do `last` em mãos, para duas
+    /// escritas não se cruzarem. Uma falha só custa a abertura instantânea da próxima vez.
+    fn persist(&self, result: &ScanResult) {
+        if let Some(path) = &self.cache
+            && let Err(e) = cache::save(path, result)
+        {
+            eprintln!("não foi possível salvar o cache em {}: {e}", path.display());
+        }
     }
 
     fn lock_last(&self) -> MutexGuard<'_, Option<ScanResult>> {
@@ -328,6 +354,30 @@ mod tests {
         assert!(!state.contains_file(Path::new("/etc/passwd")));
         // Um caminho não UTF-8 volta da UI com `�` e não casa com o real.
         assert!(!state.contains_file(&dir.join("foto\u{fffd}.jpg")));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn result_is_cached_and_restored() {
+        let dir = temp_home("cache");
+        let cache = dir.join("cache/last.json");
+        let state = Arc::new(AppState::with_cache(Some(cache.clone())));
+        assert!(state.last_result().is_none());
+
+        let (tx, rx) = mpsc::channel();
+        state
+            .start_scan(options(&dir), fake_docker(1_000), move |e| {
+                tx.send(e).unwrap()
+            })
+            .unwrap();
+        collect(&rx);
+
+        // Um app novo abre com o resultado salvo, já com o Docker e o $HOME.
+        let restored = AppState::with_cache(Some(cache)).last_result().unwrap();
+        assert_eq!(restored.docker_bytes, 1_000);
+        assert_eq!(restored.home, dir);
+        assert!(restored.finished_at > 0);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

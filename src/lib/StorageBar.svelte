@@ -4,9 +4,10 @@
 <script lang="ts">
   import { cubicOut } from "svelte/easing";
   import { Tween, prefersReducedMotion } from "svelte/motion";
+  import { fade } from "svelte/transition";
   import { CATEGORIES, type Category } from "./api";
   import type { Segment } from "./categories";
-  import { formatBytes } from "./format";
+  import { formatBytes, formatPercent } from "./format";
 
   let {
     segments,
@@ -46,33 +47,89 @@
     100 - freeWidth.current - CATEGORIES.reduce((sum, c) => sum + widths[c].current, 0),
   );
 
+  /** Tooltip do segmento sob o mouse; `x` é o centro dele, em px, relativo à barra. */
+  let tip = $state<{ key: Category | "free"; x: number } | null>(null);
+
+  function showTip(e: PointerEvent | FocusEvent) {
+    const el = (e.target as HTMLElement).closest<HTMLElement>("[data-tip]");
+    if (!el) return (tip = null);
+    const box = el.getBoundingClientRect();
+    const bar = el.parentElement!.getBoundingClientRect();
+    tip = { key: el.dataset.tip as Category | "free", x: box.left - bar.left + box.width / 2 };
+  }
+
+  const tipText = $derived.by(() => {
+    if (!tip) return "";
+    const s = segments.find((seg) => seg.key === tip!.key);
+    const [name, bytes] = s ? [s.label, s.bytes] : ["Livre", free];
+    return `${name} · ${formatBytes(bytes)} · ${formatPercent(total > 0 ? bytes / total : 0)}`;
+  });
+
   const label = $derived(
     [...segments.map((s) => `${s.label}: ${formatBytes(s.bytes)}`), `Livre: ${formatBytes(free)}`].join(", "),
   );
 </script>
 
-<div class="bar" role="group" aria-label={label}>
-  {#each segments as s (s.key)}
-    {#if widths[s.key].current > MIN_PCT}
-      <button
-        class="segment"
-        style:width="{widths[s.key].current}%"
-        style:background={s.color}
-        disabled={!onselect}
-        onclick={() => onselect?.(s.key)}
-        aria-label="{s.label}: {formatBytes(s.bytes)}"
-      ></button>
+<div class="wrap">
+  <!-- Os eventos ficam na barra: segmentos desabilitados não recebem eventos de mouse. -->
+  <div
+    class="bar"
+    role="group"
+    aria-label={label}
+    onpointermove={showTip}
+    onpointerleave={() => (tip = null)}
+    onfocusin={showTip}
+    onfocusout={() => (tip = null)}
+  >
+    {#each segments as s (s.key)}
+      {#if widths[s.key].current > MIN_PCT}
+        <button
+          class="segment"
+          data-tip={s.key}
+          style:width="{widths[s.key].current}%"
+          style:background={s.color}
+          disabled={!onselect}
+          onclick={() => onselect?.(s.key)}
+          aria-label="{s.label}: {formatBytes(s.bytes)}"
+        ></button>
+      {/if}
+    {/each}
+    {#if pendingPct > MIN_PCT}
+      <div class="pending" class:scanning></div>
     {/if}
-  {/each}
-  {#if pendingPct > MIN_PCT}
-    <div class="pending" class:scanning></div>
-  {/if}
-  {#if freeWidth.current > MIN_PCT}
-    <div class="segment free" style:width="{freeWidth.current}%"></div>
+    {#if freeWidth.current > MIN_PCT}
+      <div class="segment free" data-tip="free" style:width="{freeWidth.current}%"></div>
+    {/if}
+  </div>
+
+  {#if tip}
+    <div class="tip" role="tooltip" style:--x="{tip.x}px" transition:fade={{ duration: 120 }}>{tipText}</div>
   {/if}
 </div>
 
 <style>
+  .wrap {
+    position: relative;
+  }
+
+  /* Acima do segmento, sem sair da barra: o centro é limitado às bordas. */
+  .tip {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: clamp(90px, var(--x), calc(100% - 90px));
+    transform: translateX(-50%);
+    padding: 5px 10px;
+    border-radius: 8px;
+    background: var(--text);
+    color: var(--surface);
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    pointer-events: none;
+    font-variant-numeric: tabular-nums;
+    z-index: 1;
+  }
+
   .bar {
     display: flex;
     gap: 2px;
