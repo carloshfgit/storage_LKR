@@ -42,6 +42,7 @@ storage_LKR/
 │       ├── disk.rs            # statvfs → DiskInfo
 │       ├── walk.rs            # walk paralelo + agregação
 │       ├── classify.rs        # regras caminho/extensão → Category
+│       ├── docker.rs          # `docker system df` → DockerUsage (opcional)
 │       └── bin/scan.rs        # CLI p/ benchmark e validação
 ├── src-tauri/
 │   ├── Cargo.toml  tauri.conf.json  build.rs
@@ -75,6 +76,7 @@ pub struct ScanResult {
     disk: DiskInfo,                       // total, available, mount, device
     categories: HashMap<Category, CategoryStats>,
     trash_bytes: u64,                     // subitem de Other
+    docker: Option<DockerUsage>,          // subitem de AppsSystem, descontado do restante (§6.1)
     unaccounted_bytes: u64,               // "Reservado / sem acesso" → somado em AppsSystem
     denied_dirs: u64,
     elapsed_ms: u64,
@@ -145,6 +147,26 @@ AppsSystem += restante
 
 Assim, **a barra sempre soma 100% do disco**, como o "Sistema" do iOS. Nesta máquina o ext4 reserva cerca de 10 GB (218 G no total, 155 G usados, 53 G disponíveis), que aparecem como "Reservado / sem acesso" no detalhe de Apps/Sistema.
 
+### 6.1 Docker: identificar o maior "sem acesso"
+
+O `/var/lib/docker` e o `/var/lib/containerd` são só de root, então o walk não os enxerga. Nesta máquina eles explicam a maior parte do restante: dos 106 GB, cerca de 97 GB são Docker (21,7 GB de imagens, 16,7 GB de volumes e 58,7 GB de build cache), dos quais cerca de 75 GB podem ser liberados.
+
+O daemon informa esse uso sem root quando o usuário está no grupo `docker`:
+
+```
+docker system df --format json      # uma linha JSON por tipo: Images, Containers, Local Volumes, Build Cache
+→ {"Type":"Build Cache","Size":"58.68GB","Reclaimable":"39.88GB","TotalCount":"252","Active":"0"}
+```
+
+```rust
+pub struct DockerUsage { images: u64, containers: u64, volumes: u64, build_cache: u64, reclaimable: u64 }
+```
+
+- `docker.rs` roda o comando **em paralelo ao walk**, com timeout de 5 s. Se o binário não existir, o daemon estiver parado ou faltar permissão, o resultado é `None` e o app segue sem Docker, sem erro.
+- Os tamanhos vêm como texto em unidades decimais (`"58.68GB"`, `"113.1MB"`, `"0B"`) e são convertidos para bytes. A porcentagem entre parênteses do `Reclaimable` é descartada.
+- O Docker relata tamanho lógico, que não é exatamente o espaço alocado. Por isso o valor é limitado: `docker_bytes = min(Σ docker, restante)`, e depois `restante −= docker_bytes`. A barra continua somando 100%.
+- Na UI, o Docker é um subitem de Apps/Sistema ("Docker — 97 GB, 75 GB liberáveis"), separado de "Reservado / sem acesso".
+
 ---
 
 ## 7. Ponte Tauri (`src-tauri`)
@@ -158,6 +180,7 @@ Assim, **a barra sempre soma 100% do disco**, como o "Sistema" do iOS. Nesta má
 | `move_to_trash` | `(paths: Vec<PathBuf>) -> TrashReport` | Validação abaixo |
 | `empty_trash` | `(confirm: bool) -> u64` | Exige `confirm == true` e devolve os bytes liberados |
 | `reveal` | `(path: PathBuf) -> ()` | `tauri_plugin_opener::reveal_item_in_dir` |
+| `docker_prune` | `(target: DockerTarget, confirm: bool) -> u64` | `DockerTarget` = `BuildCache` \| `UnusedImages`. Devolve os bytes liberados (releitura de `statvfs`) |
 
 ```rust
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -171,6 +194,7 @@ Depois de `move_to_trash`, cada item sai do top-N e do total da sua categoria e 
 **Segurança (validação no Rust, não na UI):**
 - `move_to_trash`: o caminho é canonicalizado (`fs::canonicalize`) e precisa estar sob `$HOME`, **não** casar a regra 1 (apps) e constar no último `ScanResult`. Caminhos que falham são rejeitados e listados no `TrashReport`.
 - Nunca há `remove_file` direto. O único apagamento permanente é `empty_trash`, que exige confirmação explícita.
+- `docker_prune` só executa comandos fixos, sem argumento vindo da UI: `docker builder prune -f` e `docker image prune -a -f`. **Volumes nunca são apagados pelo app**, porque guardam dados (bancos, uploads); eles só aparecem com o tamanho e a dica `docker volume ls`.
 - `capabilities/default.json` libera só os commands acima e `opener:allow-reveal-item-in-dir`.
 
 ---
@@ -182,7 +206,7 @@ Depois de `move_to_trash`, cada item sai do top-N e do total da sua categoria e 
 | `App.svelte` | Orquestra o estado (`idle` / `scanning` / `done` / `error`) e a navegação entre a tela principal e o detalhe |
 | `StorageBar.svelte` | Barra única. Cada segmento usa `flex-basis` de `tweened(pct)`, com cantos arredondados só nas pontas e "Livre" como trilha neutra. Clicar abre o detalhe |
 | `Legend.svelte` | Linhas com bolinha de cor, nome e tamanho, ordenadas por bytes, mais a porcentagem |
-| `CategoryDetail.svelte` | Lista dos maiores arquivos com checkbox, "Abrir na pasta" e "Mover para Lixeira", e um rodapé com o total selecionado. Em Outros aparece o card "Lixeira — X GB · Esvaziar"; em Apps/Sistema, o card "Reservado / sem acesso" |
+| `CategoryDetail.svelte` | Lista dos maiores arquivos com checkbox, "Abrir na pasta" e "Mover para Lixeira", e um rodapé com o total selecionado. Em Outros aparece o card "Lixeira — X GB · Esvaziar"; em Apps/Sistema, os cards "Docker" (imagens, containers, volumes e build cache, com ações de limpeza) e "Reservado / sem acesso" |
 | `FileRow.svelte` | Nome, caminho abreviado (`~/…`), tamanho e data relativa |
 | `api.ts` | `startScan(onEvent)` com `new Channel<ScanEvent>()` e wrappers tipados |
 | `format.ts` | Unidades decimais (1 GB = 10⁹ B, como GNOME/iOS) e `Intl.NumberFormat('pt-BR')` |
@@ -215,4 +239,5 @@ O último `ScanResult` é salvo em `~/.cache/storage-lkr/last.json`. Ao abrir, o
 - Cards de sugestão ("Downloads > 90 dias", "Caches", "Maiores arquivos").
 - Atualização incremental com inotify ou fanotify.
 - Modo privilegiado via `pkexec` para zerar o "sem acesso".
+- Docker em modo rootless (`~/.local/share/docker`, já dentro do `$HOME`) e Podman (`podman system df`).
 - Classificação por magic bytes para arquivos sem extensão.

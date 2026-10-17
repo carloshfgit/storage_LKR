@@ -25,20 +25,31 @@ Cada etapa termina com algo **executável e verificável**. Detalhes técnicos e
 ---
 
 ## Etapa 1 — Motor de scan (CLI)
-- [ ] `model.rs`: `Category`, `FileEntry`, `CategoryStats`, `ScanResult`.
-- [ ] `disk.rs`: `disk_info("/")` via `rustix::fs::statvfs`.
-- [ ] `walk.rs`:
+- [x] `model.rs`: `Category`, `FileEntry`, `CategoryStats`, `ScanResult`.
+- [x] `disk.rs`: `disk_info("/")` via `rustix::fs::statvfs`.
+- [x] `walk.rs`:
   - jwalk paralelo, sem cruzar filesystem (`st_dev`), sem seguir symlinks
   - `st_blocks * 512` e dedupe de hardlinks
   - top-N com heap
   - progresso com rate-limit e cancelamento
-- [ ] Na Etapa 1, `classify` é provisório e só olha a extensão.
-- [ ] `bin/scan.rs`: imprime a tabela por categoria, o restante, os diretórios negados e o tempo.
+- [x] Na Etapa 1, `classify` é provisório e só olha a extensão.
+- [x] `bin/scan.rs`: imprime a tabela por categoria, o restante, os diretórios negados e o tempo.
 
 **Pronto quando:**
 - `cargo run --release -p scanner --bin scan` termina e total + restante bate com o `df /` (±1%).
 - Scan apontado para `$HOME` ≈ `du -sx ~` (±1%).
 - `/` com cache quente leva **menos de 5 s**.
+
+**Resultado (17/10/2026, SSD, 4 núcleos):**
+
+| Medida | Scanner | Referência |
+|---|---|---|
+| `$HOME` | 56 397 565 952 B, 742 mil arquivos, 1,45 s | `du -sxB1 ~` = 56 397 565 952 B (idêntico) |
+| `/` (sem root) | 79,66 GB, 1,07 milhão de arquivos | `du -sxB1 /` = 79,66 GB (diferença de 86 KB) |
+| `/`, cache quente | 2,1 a 2,6 s | meta < 5 s |
+| `/`, cache frio | 11,9 s | — |
+
+Total + restante = `df` por construção. O restante (106 GB) é real: são diretórios só de root, principalmente o Docker (`docker system df`: cerca de 97 GB entre imagens, volumes e build cache). 8 threads (2× núcleos) foi o melhor valor; 4 e 16 ficaram iguais ou piores.
 
 ---
 
@@ -56,7 +67,14 @@ Cada etapa termina com algo **executável e verificável**. Detalhes técnicos e
 | `~/Downloads/ubuntu.iso` | Outros |
 | `~/Documentos/cv.pdf` | Documentos |
 
-**Pronto quando:** `cargo test -p scanner` passa, e o CLI mostra uma distribuição plausível na máquina real.
+- [ ] `docker.rs` (ARCHITECTURE §6.1): roda `docker system df --format json` em paralelo ao walk, com timeout de 5 s, e devolve `Option<DockerUsage>`.
+- [ ] Descontar o Docker do restante: `docker_bytes = min(Σ docker, restante)`.
+- [ ] Testes do parser de tamanhos (`"58.68GB"`, `"113.1MB"`, `"0B"`, `"39.88GB (68%)"`) e do caso sem Docker (binário ausente ou daemon inacessível vira `None`, sem erro).
+- [ ] O CLI mostra a linha "Docker" separada de "Restante (sem acesso)".
+
+**Pronto quando:**
+- `cargo test -p scanner` passa, e o CLI mostra uma distribuição plausível na máquina real.
+- Nesta máquina, o CLI mostra cerca de 97 GB de Docker, e o "sem acesso" cai de 106 GB para menos de 15 GB.
 
 ---
 
@@ -84,7 +102,8 @@ Cada etapa termina com algo **executável e verificável**. Detalhes técnicos e
 ## Etapa 5 — Detalhe da categoria
 - [ ] `CategoryDetail` + `FileRow`: top-N ordenado por tamanho, com alternância para ordenar por data.
 - [ ] "Abrir na pasta" via `reveal` (`tauri-plugin-opener`).
-- [ ] Cards especiais: "Reservado / sem acesso" (Apps/Sistema) e "Lixeira" (Outros).
+- [ ] Cards especiais: "Docker" e "Reservado / sem acesso" (Apps/Sistema) e "Lixeira" (Outros).
+- [ ] O card Docker mostra imagens, containers, volumes e build cache, cada um com tamanho e quanto é liberável. Quando não há Docker, o card não aparece.
 
 **Pronto quando:** clicar no segmento "Vídeos" lista os maiores vídeos, e "Abrir na pasta" abre o Nautilus com o arquivo selecionado.
 
@@ -95,10 +114,15 @@ Cada etapa termina com algo **executável e verificável**. Detalhes técnicos e
 - [ ] Seleção múltipla, rodapé com o total e atualização da barra: bytes saem da categoria e entram em "Lixeira".
 - [ ] `empty_trash` com diálogo de confirmação ("Apagar permanentemente X GB?"), seguido de nova leitura de `disk_info`.
 - [ ] Teste manual: tentar mandar para a lixeira um caminho fora de `$HOME` via DevTools precisa ser rejeitado.
+- [ ] `docker_prune` no card Docker, com diálogo de confirmação mostrando o tamanho:
+  - "Limpar build cache" → `docker builder prune -f`
+  - "Remover imagens não usadas" → `docker image prune -a -f` (avisar que vão precisar ser baixadas de novo)
+  - Volumes: só exibidos, **sem botão**, porque guardam dados.
 
 **Pronto quando:**
 - O arquivo aparece na Lixeira do Ubuntu e pode ser restaurado pelo Nautilus.
 - Esvaziar a Lixeira aumenta o "Livre" na mesma quantidade vista no `df`.
+- Limpar o build cache do Docker aumenta o "Livre" no valor que o `df` confirma, e o card Docker é atualizado.
 
 ---
 
@@ -119,3 +143,4 @@ Cada etapa termina com algo **executável e verificável**. Detalhes técnicos e
 4. Modo privilegiado via `pkexec` para escanear o que hoje é "sem acesso".
 5. Detecção por magic bytes para arquivos sem extensão.
 6. Suporte a múltiplos discos e partições (seletor no header).
+7. Docker rootless e Podman (`podman system df`).

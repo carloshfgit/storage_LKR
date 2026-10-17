@@ -1,14 +1,12 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Motor de varredura do disco: percorre o filesystem, classifica cada arquivo
+//! e agrega os totais por categoria. Não depende do Tauri.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod classify;
+mod disk;
+mod model;
+mod walk;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use classify::classify;
+pub use disk::disk_info;
+pub use model::{Category, CategoryStats, DiskInfo, FileEntry, ScanProgress, ScanResult};
+pub use walk::{ScanError, ScanOptions, scan};
