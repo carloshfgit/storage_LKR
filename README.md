@@ -2,11 +2,7 @@
 
 <img src="logo-storage-looker-sf.png" alt="" width="96" align="right">
 
-Gerenciador de armazenamento para Ubuntu no estilo iOS/Android: uma barra horizontal única dividida por cor, com categorias por tipo de arquivo e ações para liberar espaço com segurança.
-
-```
-[ Fotos | Vídeos | Áudio | Documentos | Apps/Sistema ··········· | Outros ····· | Livre          ]
-```
+Gerenciador de armazenamento para Ubuntu no estilo iOS. Com uma barra horizontal única dividida por cor, com categorias por tipo de arquivo e ações para liberar espaço com segurança.
 
 - **Rápido:** escaneia `/` (~1 milhão de arquivos) em cerca de 2 s, com cache quente, sem root.
 - **Preciso:** mede o espaço alocado em disco, como `df` e `du`. A barra sempre soma 100% do disco.
@@ -28,18 +24,6 @@ cargo test --workspace     # testes
 
 O passo a passo completo, com pré-requisitos, a CLI de benchmark, o build do `.deb` e a resolução de problemas, está em **[docs/QUICK_SETUP.md](docs/QUICK_SETUP.md)**.
 
-## Status
-
-| Etapa | | |
-|---|---|---|
-| 0. Ambiente | ✅ | |
-| 1. Motor de scan (CLI) | ✅ | Bate com `du` byte a byte em `$HOME` |
-| 2. Classificação + Docker | ✅ | "Sem acesso" caiu de 106 GB para 9 GB |
-| 3. Ponte Tauri | ✅ | Eventos `progress`/`done`/`docker` pelo Channel |
-| 4. Tela principal | ✅ | Barra ao vivo, legenda e tema claro/escuro (falta a conferência visual) |
-| 5. Detalhe da categoria | ✅ | Maiores arquivos, "Abrir na pasta" e cards Docker/Lixeira (falta a conferência visual) |
-| 6. Ações de limpeza | ✅ | Lixeira, esvaziar e prune do Docker, validados no Rust (falta a conferência manual) |
-| 7. Polimento e pacote `.deb` | ✅ | Nome e ícone, abertura com o último scan, tooltip e animações (falta instalar e conferir) |
 
 ## Documentação
 
