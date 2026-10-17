@@ -23,14 +23,19 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D13](#d13) | Sem leitura de conteúdo (magic bytes) | ✅ | 2 |
 | [D14](#d14) | Lixeira contada à parte | ✅ | 2 |
 | [D15](#d15) | Docker via `docker system df` | ✅ | 2 |
-| [D16](#d16) | Docker não bloqueia o scan | ✅ motor · 📋 app | 2–3 |
+| [D16](#d16) | Docker não bloqueia o scan | ✅ | 2–3 |
 | [D17](#d17) | Limpeza: Lixeira sim, `rm` nunca | 📋 | 6 |
 | [D18](#d18) | Limpeza do Docker sem volumes | 📋 | 6 |
-| [D19](#d19) | Validação de segurança no Rust, não na UI | 📋 | 3–6 |
+| [D19](#d19) | Validação de segurança no Rust, não na UI | ✅ permissões · 📋 ações | 3–6 |
 | [D20](#d20) | Unidades decimais (GB = 10⁹) | ✅ CLI · 📋 UI | 1–4 |
 | [D21](#d21) | Regras de apps portáteis e de build/dev | ✅ | 2 |
 | [D22](#d22) | `.ts` não é vídeo | ✅ | 2 |
 | [D23](#d23) | Mídia dentro de projetos de código conta como mídia | ⚠️ | — |
+| [D24](#d24) | Ciclo do scan num serviço testável, com descarte por geração | ✅ | 3 |
+| [D25](#d25) | Permissão explícita por command (ACL do Tauri) | ✅ | 3 |
+| [D26](#d26) | Caminhos não UTF-8 serializados com perdas | ✅ | 3 |
+| [D27](#d27) | Motor otimizado também no `tauri dev` | ✅ | 3 |
+| [D28](#d28) | SvelteKit em modo SPA no lugar de Svelte puro | ✅ | 0–3 |
 
 ---
 
@@ -281,3 +286,52 @@ Volumes só são exibidos, **sem botão**.
 - As capabilities do Tauri expõem só os commands necessários.
 
 **Por quê:** a UI é JavaScript, e qualquer coisa que chega pelo `invoke` deve ser tratada como entrada não confiável. A barreira precisa ficar onde o arquivo é de fato tocado.
+
+---
+
+## Ponte Tauri
+
+### D24 — Ciclo do scan num serviço testável <a id="d24"></a>
+**Decisão:** toda a lógica da ponte fica em `AppState::start_scan(opts, docker, send)` (`state.rs`), sem tipos do Tauri. Os commands só repassam para ele. A consulta ao Docker e o destino dos eventos são parâmetros.
+
+**Por quê:** não há como clicar na janela num teste automatizado. Com o Docker falso e um `mpsc` no lugar do `Channel`, o `cargo test` cobre:
+- a ordem dos eventos;
+- o cancelamento;
+- a recusa de dois scans ao mesmo tempo;
+- o descarte de um resultado de Docker antigo.
+
+**Detalhes:**
+- `running` volta a `false` já no `Done`, para o usuário poder reescanear sem esperar os ~5 s do Docker.
+- Para isso não causar corrida, cada scan tem uma `generation`. O Docker de um scan antigo, se responder depois, é descartado.
+- `ScanEvent` ganhou `Cancelled`, que não estava na ARCHITECTURE, para a UI distinguir cancelamento de erro.
+
+### D25 — Permissão explícita por command <a id="d25"></a>
+**Decisão:** o `build.rs` declara os commands no `AppManifest` do Tauri, e `capabilities/default.json` libera cada um por nome (`allow-start-scan`, etc.). O `opener:default` do template foi removido.
+
+**Por quê:** sem o manifesto, o Tauri v2 libera para a janela todo command registrado. Com ele, um command novo só fica acessível depois de entrar explicitamente na capability. Isso importa a partir da Etapa 6, quando houver commands que apagam coisas (D19). O `opener:default` permitia abrir URLs e arquivos arbitrários; só `allow-reveal-item-in-dir` será necessário, na Etapa 5.
+
+### D26 — Caminhos não UTF-8 serializados com perdas <a id="d26"></a>
+**Decisão:** `FileEntry.path` e `DiskInfo.mount` são serializados com `to_string_lossy`. Bytes inválidos viram `�`.
+
+**Por quê:** nomes de arquivo no Linux são bytes, não texto. O serde recusa um `PathBuf` não UTF-8, e um único arquivo assim entre os 200 maiores faria o evento `done` inteiro falhar.
+
+**Consequência para a Etapa 6:** o caminho que volta da UI não é o real, então ações sobre esses arquivos precisam ser recusadas, o que a validação de D19 já faz ao exigir que o caminho conste no último scan.
+
+### D27 — Motor otimizado também no `tauri dev` <a id="d27"></a>
+**Decisão:** o `[profile.dev.package]` do workspace compila `scanner`, `jwalk`, `rayon` e `crossbeam` com `opt-level = 3`. O resto do app continua em debug.
+
+**Por quê:** foi medido:
+
+| Perfil | Walk de `/` |
+|---|---|
+| debug puro | 4,1 a 4,4 s |
+| debug com o motor otimizado | 2,5 a 2,7 s |
+| release | cerca de 2,2 s |
+
+O app em desenvolvimento passa a se comportar como o real, e o build incremental do app não fica mais lento.
+
+### D28 — SvelteKit em modo SPA <a id="d28"></a>
+**Decisão:** manter o template SvelteKit gerado na Etapa 0 (`adapter-static`, `ssr = false`), em vez de trocar para Svelte puro como dizia o STACK_CHOICE.
+
+**Por quê:** para um app de uma tela, a diferença é só de lugar: `routes/+page.svelte` faz o papel de `App.svelte` e `src/lib` é importado como `$lib`. Trocar o template custaria tempo sem ganho. O bundle é estático, sem servidor.
+

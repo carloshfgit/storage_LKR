@@ -4,7 +4,7 @@
 
 ```
 ┌──────────────────────────── Frontend (Svelte 5, WebKitGTK) ───────────────────────────┐
-│  App.svelte ─ Header (disco) ─ StorageBar (7 segmentos) ─ Legend ─ CategoryDetail     │
+│  +page.svelte ─ Header (disco) ─ StorageBar (7 segmentos) ─ Legend ─ CategoryDetail   │
 │                    ▲ ScanEvent (Channel)                 │ invoke(...)                │
 └────────────────────┼─────────────────────────────────────┼────────────────────────────┘
                      │                                     ▼
@@ -33,7 +33,7 @@
 ```
 storage_LKR/
 ├── Cargo.toml                 # workspace: ["crates/scanner", "src-tauri"]
-├── package.json  vite.config.ts  tsconfig.json  index.html
+├── package.json  vite.config.js  svelte.config.js  tsconfig.json
 ├── crates/scanner/
 │   ├── Cargo.toml
 │   └── src/
@@ -45,18 +45,28 @@ storage_LKR/
 │       ├── docker.rs          # `docker system df` → DockerUsage (opcional)
 │       └── bin/scan.rs        # CLI p/ benchmark e validação
 ├── src-tauri/
-│   ├── Cargo.toml  tauri.conf.json  build.rs
+│   ├── Cargo.toml  tauri.conf.json
+│   ├── build.rs               # lista de commands → permissões allow-<command>
 │   ├── capabilities/default.json
-│   └── src/{main.rs, commands.rs, state.rs}
-└── src/
-    ├── App.svelte  main.ts  theme.css
-    └── lib/
+│   └── src/
+│       ├── main.rs  lib.rs    # lib.rs: registra AppState e os commands
+│       ├── commands.rs        # commands finos, só repassam ao AppState
+│       └── state.rs           # AppState + ScanEvent: ciclo do scan, testável sem Tauri
+└── src/                       # SvelteKit em modo SPA (adapter-static, ssr = false)
+    ├── app.html
+    ├── routes/+layout.ts  routes/+page.svelte   # tela única; orquestra o estado
+    └── lib/                   # importado como $lib/…
         ├── StorageBar.svelte  Legend.svelte  CategoryDetail.svelte  FileRow.svelte
-        ├── api.ts             # wrappers tipados de invoke/Channel
+        ├── theme.css
+        ├── api.ts             # wrappers tipados de invoke/Channel (✅ Etapa 3)
         └── format.ts          # bytes → "12,4 GB" (decimal, pt-BR)
 ```
 
 O motor fica num crate separado de propósito: pode ser testado com `cargo test` e medido com o CLI sem abrir a janela.
+
+O template gerado na Etapa 0 é **SvelteKit**, não Svelte puro. Como é um app de uma tela, a diferença é só de lugar: o papel do `App.svelte` fica com `routes/+page.svelte`. O SvelteKit roda como SPA estática (`adapter-static`, `ssr = false`), sem servidor.
+
+O perfil `dev` compila o `scanner`, o `jwalk`, o `rayon` e o `crossbeam` com `opt-level = 3`. Sem isso, o walk no `tauri dev` leva o dobro (DECISIONS D27).
 
 ---
 
@@ -199,12 +209,31 @@ pub struct DockerUsage { images: u64, containers: u64, volumes: u64, build_cache
 | `reveal` | `(path: PathBuf) -> ()` | `tauri_plugin_opener::reveal_item_in_dir` |
 | `docker_prune` | `(target: DockerTarget, confirm: bool) -> u64` | `DockerTarget` = `BuildCache` \| `UnusedImages`. Devolve os bytes liberados (releitura de `statvfs`) |
 
+Status: `disk_info`, `start_scan`, `cancel_scan` e `category_files` estão ✅ implementados (Etapa 3). Os demais entram nas Etapas 5 e 6.
+
 ```rust
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum ScanEvent { Progress { bytes: HashMap<Category,u64>, files: u64 }, Done { result: ScanResult }, Docker { usage: Option<DockerUsage>, docker_bytes: u64, unaccounted_bytes: u64 }, Error { message: String } }
+enum ScanEvent {
+    Progress(ScanProgress),                       // { kind: "progress", bytes, files }
+    Done { result: ScanResult },
+    Docker { usage: Option<DockerUsage>, docker_bytes: u64, unaccounted_bytes: u64 },
+    Cancelled,
+    Error { message: String },
+}
 ```
 
-**Estado (`state.rs`):** `AppState { last: Mutex<Option<ScanResult>>, cancel: Arc<AtomicBool>, running: AtomicBool }`.
+Sequência de eventos: `progress`* → (`done` → `docker`) | `cancelled` | `error`.
+
+**Estado (`state.rs`):**
+
+```rust
+AppState { last: Mutex<Option<ScanResult>>, cancel: Arc<AtomicBool>, running: AtomicBool, generation: AtomicU64 }
+```
+
+- Gerenciado como `Arc<AppState>`, porque a thread do scan precisa dele depois que o command retorna.
+- `start_scan(opts, docker, send)` recebe a consulta ao Docker e o destino dos eventos como parâmetros. O command passa `docker_usage` e o `Channel`; os testes passam um Docker falso e um `mpsc`. Assim, o ciclo inteiro é testado com `cargo test`, sem janela (DECISIONS D24).
+- `running` volta a `false` logo no `Done`. Um novo scan pode começar enquanto o Docker do anterior ainda responde. `generation` garante que esse resultado antigo seja descartado em vez de sobrescrever o novo.
+- `cancel` é zerado **antes** do command retornar, então um `cancel_scan` imediatamente depois já vale.
 
 Depois de `move_to_trash`, cada item sai do top-N e do total da sua categoria e seus bytes vão para `Other`/`trash_bytes`. **Mover para a Lixeira não libera espaço**; só `empty_trash` libera, e aí `livre` é recalculado pelo `statvfs`.
 
@@ -212,7 +241,8 @@ Depois de `move_to_trash`, cada item sai do top-N e do total da sua categoria e 
 - `move_to_trash`: o caminho é canonicalizado (`fs::canonicalize`) e precisa estar sob `$HOME`, **não** casar a regra 1 (`is_app_path`: sistema e apps gerenciados; apps portáteis podem ir para a Lixeira) e constar no último `ScanResult`. Caminhos que falham são rejeitados e listados no `TrashReport`.
 - Nunca há `remove_file` direto. O único apagamento permanente é `empty_trash`, que exige confirmação explícita.
 - `docker_prune` só executa comandos fixos, sem argumento vindo da UI: `docker builder prune -f` e `docker image prune -a -f`. **Volumes nunca são apagados pelo app**, porque guardam dados (bancos, uploads); eles só aparecem com o tamanho e a dica `docker volume ls`.
-- `capabilities/default.json` libera só os commands acima e `opener:allow-reveal-item-in-dir`.
+- **Permissões:** o `build.rs` declara os commands no `AppManifest`. Com isso, o Tauri passa a exigir a permissão `allow-<command>` de cada um, em vez de liberar todos os commands registrados. `capabilities/default.json` lista só `core:default` e essas permissões. O `opener:default` do template foi removido; `opener:allow-reveal-item-in-dir` entra na Etapa 5 (DECISIONS D25).
+- **Caminhos não UTF-8** (válidos no Linux) são serializados com perdas (`�`) para não derrubar o resultado inteiro (DECISIONS D26). Na Etapa 6, as ações sobre esses arquivos precisam ser recusadas, já que o caminho recebido de volta não é o real.
 
 ---
 
@@ -220,7 +250,7 @@ Depois de `move_to_trash`, cada item sai do top-N e do total da sua categoria e 
 
 | Componente | Responsabilidade |
 |---|---|
-| `App.svelte` | Orquestra o estado (`idle` / `scanning` / `done` / `error`) e a navegação entre a tela principal e o detalhe |
+| `routes/+page.svelte` | Orquestra o estado (`idle` / `scanning` / `done` / `error`) e a navegação entre a tela principal e o detalhe |
 | `StorageBar.svelte` | Barra única. Cada segmento usa `flex-basis` de `tweened(pct)`, com cantos arredondados só nas pontas e "Livre" como trilha neutra. Clicar abre o detalhe |
 | `Legend.svelte` | Linhas com bolinha de cor, nome e tamanho, ordenadas por bytes, mais a porcentagem |
 | `CategoryDetail.svelte` | Lista dos maiores arquivos com checkbox, "Abrir na pasta" e "Mover para Lixeira", e um rodapé com o total selecionado. Em Outros aparece o card "Lixeira — X GB · Esvaziar"; em Apps/Sistema, os cards "Docker" (imagens, containers, volumes e build cache, com ações de limpeza) e "Reservado / sem acesso" |

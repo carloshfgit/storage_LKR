@@ -98,11 +98,28 @@ Total + restante = `df` por construção. O restante (106 GB) é real: são dire
 ---
 
 ## Etapa 3 — Ponte Tauri
-- [ ] `state.rs` (`AppState`) e `commands.rs`: `disk_info`, `start_scan` (Channel), `cancel_scan`, `category_files`.
-- [ ] `capabilities/default.json` expondo só esses commands.
-- [ ] `api.ts` com os tipos espelhando `ScanEvent`/`ScanResult`.
+- [x] `state.rs`:
+  - `AppState`, gerenciado como `Arc`;
+  - `ScanEvent` (`progress`, `done`, `docker`, `cancelled`, `error`);
+  - ciclo do scan numa thread, com o Docker consultado depois do `done` e descartado se for de um scan antigo (`generation`).
+- [x] `commands.rs`: `disk_info`, `start_scan` (Channel), `cancel_scan`, `category_files`.
+- [x] `build.rs` + `capabilities/default.json`: cada command exige `allow-<command>`, e só esses 4 estão liberados. O `opener:default` foi removido.
+- [x] `src/lib/api.ts` com os tipos espelhando `ScanEvent`/`ScanResult`.
+- [x] `routes/+page.svelte` provisória, com Escanear/Cancelar, totais ao vivo, maiores por categoria e log dos eventos (também no `console.log`).
+- [x] Caminhos não UTF-8 serializados com perdas, e motor otimizado no perfil `dev`.
 
 **Pronto quando:** o DevTools da janela mostra eventos `progress` chegando e um `done` final, e `cancel_scan` interrompe o scan.
+
+**Resultado (17/10/2026):**
+- 4 testes da ponte, com Docker falso, cobrem:
+  - `progress`* → `done` → `docker`;
+  - cancelar logo após iniciar e depois escanear de novo;
+  - recusa de um segundo scan simultâneo;
+  - descarte do Docker de um scan antigo.
+- Workspace: 33 testes passam, clippy limpo, `npm run check` sem erros.
+- `npm run tauri dev` compila e abre a janela sem erros.
+- Walk no perfil `dev`: de 4,1–4,4 s para 2,5–2,7 s com o motor otimizado.
+- ⏳ **Falta a conferência visual** (clicar na janela e olhar o DevTools), que precisa ser feita por você.
 
 ---
 

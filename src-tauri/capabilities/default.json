@@ -1,10 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Permissões da janela principal: só os commands do app.",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:default"
+    "allow-disk-info",
+    "allow-start-scan",
+    "allow-cancel-scan",
+    "allow-category-files"
   ]
 }

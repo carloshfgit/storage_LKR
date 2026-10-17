@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-disk-info"
+description = "Enables the disk_info command without any pre-configured scope."
+commands.allow = ["disk_info"]
+
+[[permission]]
+identifier = "deny-disk-info"
+description = "Denies the disk_info command without any pre-configured scope."
+commands.deny = ["disk_info"]

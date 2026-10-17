@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::docker::DockerUsage;
 
@@ -46,6 +46,7 @@ impl Category {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskInfo {
+    #[serde(serialize_with = "lossy_path")]
     pub mount: PathBuf,
     pub device: String,
     pub total_bytes: u64,
@@ -61,6 +62,7 @@ impl DiskInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
+    #[serde(serialize_with = "lossy_path")]
     pub path: PathBuf,
     /// Espaço alocado em disco (`st_blocks * 512`).
     pub bytes: u64,
@@ -117,6 +119,12 @@ pub struct ScanProgress {
     pub files: u64,
 }
 
+/// Nomes de arquivo no Linux podem não ser UTF-8, e o serde recusa esses `PathBuf`. Um nome
+/// assim derrubaria o resultado inteiro; com a conversão com perdas, só ele sai com `�`.
+fn lossy_path<S: Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&path.to_string_lossy())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +153,20 @@ mod tests {
             images: total,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn non_utf8_paths_serialize_lossy() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let entry = FileEntry {
+            path: PathBuf::from(OsStr::from_bytes(b"/home/u/foto\xff.jpg")),
+            bytes: 1,
+            modified: 0,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("/home/u/foto\u{fffd}.jpg"), "{json}");
     }
 
     #[test]

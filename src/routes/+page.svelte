@@ -1,156 +1,102 @@
+<!-- Página provisória da Etapa 3: dispara o scan e mostra os eventos crus.
+     A interface de verdade (barra, legenda) entra na Etapa 4. -->
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
+  import {
+    CATEGORIES,
+    cancelScan,
+    categoryFiles,
+    diskInfo,
+    startScan,
+    type Category,
+    type DiskInfo,
+    type FileEntry,
+    type ScanEvent,
+  } from "$lib/api";
 
-  let name = $state("");
-  let greetMsg = $state("");
+  let disk = $state<DiskInfo | null>(null);
+  let bytes = $state<Partial<Record<Category, number>>>({});
+  let files = $state(0);
+  let status = $state("parado");
+  let log = $state<string[]>([]);
+  let top = $state<FileEntry[]>([]);
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  const gb = (b: number) => (b / 1e9).toFixed(2) + " GB";
+
+  function onEvent(e: ScanEvent) {
+    console.log("scan event", e);
+    if (e.kind === "progress") {
+      bytes = e.bytes;
+      files = e.files;
+      return;
+    }
+    if (e.kind === "done") {
+      status = `concluído em ${(e.result.elapsed_ms / 1000).toFixed(2)} s — aguardando Docker`;
+    } else if (e.kind === "docker") {
+      status = "concluído";
+    } else if (e.kind === "cancelled") {
+      status = "cancelado";
+    } else {
+      status = "erro: " + e.message;
+    }
+    log = [...log, `${e.kind}: ${JSON.stringify(e).slice(0, 300)}`];
   }
+
+  async function scan() {
+    log = [];
+    top = [];
+    status = "escaneando";
+    try {
+      await startScan(onEvent);
+    } catch (err) {
+      status = "erro: " + err;
+    }
+  }
+
+  async function showTop(c: Category) {
+    try {
+      top = (await categoryFiles(c)).slice(0, 10);
+    } catch (err) {
+      status = "erro: " + err;
+    }
+  }
+
+  onMount(async () => {
+    disk = await diskInfo();
+  });
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+<main>
+  <h1>Ponte Tauri — teste</h1>
+  {#if disk}
+    <p>{disk.device} em {disk.mount}: {gb(disk.total_bytes - disk.available_bytes)} usados de {gb(disk.total_bytes)}</p>
+  {/if}
 
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
-  </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
+  <button onclick={scan}>Escanear</button>
+  <button onclick={cancelScan}>Cancelar</button>
+  <span>{status} · {files} arquivos</span>
 
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
+  <table>
+    <tbody>
+      {#each CATEGORIES as c}
+        <tr>
+          <td>{c}</td>
+          <td>{gb(bytes[c] ?? 0)}</td>
+          <td><button onclick={() => showTop(c)}>maiores</button></td>
+        </tr>
+      {/each}
+    </tbody>
+  </table>
+
+  {#each top as f}
+    <div>{gb(f.bytes)} — {f.path}</div>
+  {/each}
+
+  <pre>{log.join("\n")}</pre>
 </main>
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
-
-  a:hover {
-    color: #24c8db;
-  }
-
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
-  }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
-
+  main { font-family: system-ui, sans-serif; padding: 16px; }
+  td { padding: 2px 12px 2px 0; }
+  pre { white-space: pre-wrap; font-size: 12px; }
 </style>

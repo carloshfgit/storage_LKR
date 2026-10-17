@@ -12,3 +12,14 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# O motor de scan roda otimizado também no `tauri dev`: sem isso o walk de `/`
+# leva o dobro (4,1–4,4 s contra 2,2 s). O resto do app segue em debug.
+[profile.dev.package]
+scanner = { opt-level = 3 }
+jwalk = { opt-level = 3 }
+rayon = { opt-level = 3 }
+rayon-core = { opt-level = 3 }
+crossbeam-deque = { opt-level = 3 }
+crossbeam-epoch = { opt-level = 3 }
+crossbeam-utils = { opt-level = 3 }
