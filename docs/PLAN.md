@@ -124,14 +124,20 @@ Total + restante = `df` por construção. O restante (106 GB) é real: são dire
 ---
 
 ## Etapa 4 — Tela principal
-- [ ] `theme.css`: tokens de cor, claro/escuro e tipografia.
-- [ ] `format.ts`: bytes decimais em pt-BR.
-- [ ] Header com nome do disco e "X GB de Y GB usados".
-- [ ] `StorageBar`: 7 segmentos com `tweened`, que crescem ao vivo durante o scan, com "Livre" desenhado logo após `disk_info`.
-- [ ] `Legend` ordenada por tamanho e botão "Reescanear".
-- [ ] Estados: escaneando (com contador de arquivos), pronto e erro.
+- [x] `theme.css`: tokens de cor, claro/escuro e tipografia.
+- [x] `format.ts`: bytes decimais em pt-BR.
+- [x] Header com nome do disco e "X GB de Y GB usados".
+- [x] `StorageBar`: 7 segmentos com `Tween`, que crescem ao vivo durante o scan, com "Livre" desenhado logo após `disk_info`.
+- [x] `Legend` ordenada por tamanho e botão "Reescanear".
+- [x] Estados: escaneando (com contador de arquivos), pronto, cancelado e erro.
 
 **Pronto quando:** a barra anima durante o scan, soma exatamente 100% no fim e alterna corretamente entre tema claro e escuro.
+
+**Resultado (17/10/2026):**
+- A barra mantém a escala do disco durante o scan, com uma faixa listrada "ainda não contado" que some no `done` (DECISIONS D29). Cancelar volta ao último resultado completo (D30).
+- Apps/Sistema mostra na legenda o que inclui: Docker e reservado/sem acesso ("consultando Docker…" até o evento `docker`).
+- `npm run check` sem erros, `npm run build` ok e `format.ts` conferido ("5,77 GB", "12,4 GB", "155 GB", 999,7 MB → "1,00 GB", "1.070.000").
+- ⏳ **Falta a conferência visual** (animação, 100% no fim, tema claro e escuro), que precisa ser feita por você.
 
 ---
 

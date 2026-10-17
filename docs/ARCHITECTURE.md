@@ -59,7 +59,8 @@ storage_LKR/
         ├── StorageBar.svelte  Legend.svelte  CategoryDetail.svelte  FileRow.svelte
         ├── theme.css
         ├── api.ts             # wrappers tipados de invoke/Channel (✅ Etapa 3)
-        └── format.ts          # bytes → "12,4 GB" (decimal, pt-BR)
+        ├── categories.ts      # nome e cor de cada categoria (✅ Etapa 4)
+        └── format.ts          # bytes → "12,4 GB" (decimal, pt-BR) (✅ Etapa 4)
 ```
 
 O motor fica num crate separado de propósito: pode ser testado com `cargo test` e medido com o CLI sem abrir a janela.
@@ -250,13 +251,21 @@ Depois de `move_to_trash`, cada item sai do top-N e do total da sua categoria e 
 
 | Componente | Responsabilidade |
 |---|---|
-| `routes/+page.svelte` | Orquestra o estado (`idle` / `scanning` / `done` / `error`) e a navegação entre a tela principal e o detalhe |
-| `StorageBar.svelte` | Barra única. Cada segmento usa `flex-basis` de `tweened(pct)`, com cantos arredondados só nas pontas e "Livre" como trilha neutra. Clicar abre o detalhe |
-| `Legend.svelte` | Linhas com bolinha de cor, nome e tamanho, ordenadas por bytes, mais a porcentagem |
+| `routes/+page.svelte` | Orquestra o estado (`idle` / `scanning` / `done` / `cancelled` / `error`), monta os segmentos e, na Etapa 5, a navegação para o detalhe. Escaneia ao abrir |
+| `StorageBar.svelte` | Barra única, em ordem fixa: as 6 categorias, a faixa "ainda não contado" e "Livre" na ponta direita. Cada largura é um `Tween` (600 ms, `cubicOut`) redirecionado a cada `progress`. Vãos de 2px com a cor do card separam os segmentos. Clicar abre o detalhe (Etapa 5) |
+| `Legend.svelte` | Linhas com bolinha de cor, nome, tamanho e porcentagem do disco, ordenadas por bytes (`animate:flip`) e com "Livre" por último. Apps/Sistema traz a composição: Docker e reservado/sem acesso |
 | `CategoryDetail.svelte` | Lista dos maiores arquivos com checkbox, "Abrir na pasta" e "Mover para Lixeira", e um rodapé com o total selecionado. Em Outros aparece o card "Lixeira — X GB · Esvaziar"; em Apps/Sistema, os cards "Docker" (imagens, containers, volumes e build cache, com ações de limpeza) e "Reservado / sem acesso" |
 | `FileRow.svelte` | Nome, caminho abreviado (`~/…`), tamanho e data relativa |
 | `api.ts` | `startScan(onEvent)` com `new Channel<ScanEvent>()` e wrappers tipados |
-| `format.ts` | Unidades decimais (1 GB = 10⁹ B, como GNOME/iOS) e `Intl.NumberFormat('pt-BR')` |
+| `categories.ts` | Nome (espelha `Category::label`) e token de cor de cada categoria, mais o tipo `Segment` usado pela barra e pela legenda |
+| `format.ts` | Unidades decimais (1 GB = 10⁹ B, como GNOME/iOS) com 3 algarismos significativos e casas fixas, porcentagem, contagem e segundos, tudo via `Intl.NumberFormat('pt-BR')` |
+
+**Barra durante o scan (DECISIONS D29):**
+- Antes do scan, `disk_info` já desenha "Livre"; o resto da barra é a faixa listrada.
+- A cada `progress`, as categorias crescem da esquerda, e a faixa listrada (animada) encolhe.
+- No `done`, Apps/Sistema recebe `docker_bytes + unaccounted_bytes` e a faixa some: a barra fecha 100%. O evento `docker` só divide o valor entre os dois, sem mudar a barra.
+- A largura é `bytes / max(total, Σ segmentos + livre)`, então a soma nunca passa de 100%.
+- "Reescanear" relê `disk_info` e zera a barra. Cancelar volta ao último resultado completo, com o disco dele (D30).
 
 **Tema (`theme.css`)**:
 
@@ -269,8 +278,10 @@ Depois de `move_to_trash`, cada item sai do top-N e do total da sua categoria e 
 | `--cat-apps` | `#8E8E93` |
 | `--cat-other` | `#BF5AF2` |
 | `--track` (Livre) | `#E5E5EA` (claro) / `#3A3A3C` (escuro) |
+| `--track-stripe` (não contado) | `#D1D1D6` (claro) / `#48484A` (escuro) |
 
-- Claro e escuro via `prefers-color-scheme`.
+- Claro e escuro via `prefers-color-scheme`. Fundo e card como no iOS: `#F2F2F7`/`#FFFFFF` no claro e `#000000`/`#1C1C1E` no escuro.
+- `prefers-reduced-motion` zera as animações.
 - Fonte do sistema: `system-ui, "Ubuntu", "Cantarell"`.
 - `--radius: 14px`, cards com `box-shadow` suave e transições de 0,6 s com easing "iOS" (`cubic-bezier(.2,.8,.2,1)`).
 

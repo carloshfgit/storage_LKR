@@ -1,0 +1,70 @@
+/* Tokens visuais do app (ARCHITECTURE §8). Claro por padrão, escuro via prefers-color-scheme. */
+:root {
+  color-scheme: light dark;
+
+  --cat-photos: #ffb800;
+  --cat-videos: #ff375f;
+  --cat-audio: #ff9f0a;
+  --cat-documents: #0a84ff;
+  --cat-apps: #8e8e93;
+  --cat-other: #bf5af2;
+  /* "Livre" é a trilha da barra. */
+  --track: #e5e5ea;
+  --track-stripe: #d1d1d6;
+
+  --bg: #f2f2f7;
+  --surface: #ffffff;
+  --text: #1c1c1e;
+  --text-secondary: #6c6c70;
+  --separator: rgba(60, 60, 67, 0.16);
+  --accent: #007aff;
+  --danger: #ff3b30;
+
+  --font: system-ui, "Ubuntu", "Cantarell", sans-serif;
+  --radius: 14px;
+  --bar-radius: 8px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 16px rgba(0, 0, 0, 0.06);
+  /* Easing "iOS": arranca rápido e assenta devagar. */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --duration: 0.6s;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --track: #3a3a3c;
+    --track-stripe: #48484a;
+
+    --bg: #000000;
+    --surface: #1c1c1e;
+    --text: #f2f2f7;
+    --text-secondary: #98989f;
+    --separator: rgba(84, 84, 88, 0.6);
+    --accent: #0a84ff;
+    --danger: #ff453a;
+
+    --shadow: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration: 0s;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+button {
+  font: inherit;
+}

@@ -27,7 +27,7 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D17](#d17) | Limpeza: Lixeira sim, `rm` nunca | 📋 | 6 |
 | [D18](#d18) | Limpeza do Docker sem volumes | 📋 | 6 |
 | [D19](#d19) | Validação de segurança no Rust, não na UI | ✅ permissões · 📋 ações | 3–6 |
-| [D20](#d20) | Unidades decimais (GB = 10⁹) | ✅ CLI · 📋 UI | 1–4 |
+| [D20](#d20) | Unidades decimais (GB = 10⁹) | ✅ | 1–4 |
 | [D21](#d21) | Regras de apps portáteis e de build/dev | ✅ | 2 |
 | [D22](#d22) | `.ts` não é vídeo | ✅ | 2 |
 | [D23](#d23) | Mídia dentro de projetos de código conta como mídia | ⚠️ | — |
@@ -36,6 +36,8 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D26](#d26) | Caminhos não UTF-8 serializados com perdas | ✅ | 3 |
 | [D27](#d27) | Motor otimizado também no `tauri dev` | ✅ | 3 |
 | [D28](#d28) | SvelteKit em modo SPA no lugar de Svelte puro | ✅ | 0–3 |
+| [D29](#d29) | Barra ao vivo com faixa "ainda não contado" | ✅ | 4 |
+| [D30](#d30) | Reescanear zera a barra; cancelar volta ao resultado anterior | ✅ | 4 |
 
 ---
 
@@ -99,6 +101,8 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 **Decisão:** 1 GB = 10⁹ bytes.
 
 **Por quê:** é o que o GNOME e o iOS mostram. Com GiB, os números não bateriam com o "Sobre" do Ubuntu.
+
+**Na UI (`format.ts`):** 3 algarismos significativos com casas fixas ("5,77 GB", "12,4 GB", "155 GB"). Casas fixas evitam que os números mudem de largura a cada `progress`.
 
 ---
 
@@ -334,4 +338,22 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 **Decisão:** manter o template SvelteKit gerado na Etapa 0 (`adapter-static`, `ssr = false`), em vez de trocar para Svelte puro como dizia o STACK_CHOICE.
 
 **Por quê:** para um app de uma tela, a diferença é só de lugar: `routes/+page.svelte` faz o papel de `App.svelte` e `src/lib` é importado como `$lib`. Trocar o template custaria tempo sem ganho. O bundle é estático, sem servidor.
+
+---
+
+## Tela principal
+
+### D29 — Barra ao vivo com faixa "ainda não contado" <a id="d29"></a>
+**Decisão:** durante o scan, a barra mantém a escala do disco inteiro. As categorias crescem da esquerda, "Livre" fica fixo na ponta direita e o meio é uma faixa listrada animada com o que ainda não foi contado. No `done`, o restante entra em Apps/Sistema (D05) e a faixa some.
+
+**Por quê:** o restante (`usado − escaneado`) só é conhecido no fim. A escala fixa faz cada segmento só crescer, sem saltos, e o fechamento dos 100% vira a própria animação final.
+
+**Descartado:**
+- Normalizar pelo escaneado até o momento: todas as larguras mudariam a cada evento e "pulariam" no fim.
+- Esconder a barra até o `done`: o scan leva ~2 s, mas com cache frio são ~12 s sem nenhum retorno.
+
+### D30 — Reescanear zera a barra; cancelar volta ao resultado anterior <a id="d30"></a>
+**Decisão:** "Reescanear" relê `disk_info` e recomeça a barra do zero. Se o scan for cancelado, a tela volta ao último resultado completo, com o `DiskInfo` dele. Sem resultado anterior, fica o parcial, com a faixa "ainda não contado" parada.
+
+**Por quê:** um scan cancelado não tem o restante, então a barra dele não soma 100%. Mostrar o resultado anterior mantém a promessa de D05 sempre que existe um. O `DiskInfo` volta junto para o "Livre" bater com as categorias daquele scan.
 
