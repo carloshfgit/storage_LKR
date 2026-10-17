@@ -11,18 +11,39 @@ use serde::{Deserialize, Serialize};
 /// `docker system df` levou ~5 s nesta máquina; o padrão dá folga.
 pub const DEFAULT_DOCKER_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Uma linha do `docker system df`: imagens, containers, volumes ou build cache.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerItem {
+    pub size: u64,
+    /// O que o Docker considera removível (sem container/uso ativo).
+    pub reclaimable: u64,
+    pub count: u64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DockerUsage {
-    pub images: u64,
-    pub containers: u64,
-    pub volumes: u64,
-    pub build_cache: u64,
-    pub reclaimable: u64,
+    pub images: DockerItem,
+    pub containers: DockerItem,
+    pub volumes: DockerItem,
+    pub build_cache: DockerItem,
 }
 
 impl DockerUsage {
+    fn items(&self) -> [&DockerItem; 4] {
+        [
+            &self.images,
+            &self.containers,
+            &self.volumes,
+            &self.build_cache,
+        ]
+    }
+
     pub fn total(&self) -> u64 {
-        self.images + self.containers + self.volumes + self.build_cache
+        self.items().iter().map(|i| i.size).sum()
+    }
+
+    pub fn reclaimable(&self) -> u64 {
+        self.items().iter().map(|i| i.reclaimable).sum()
     }
 }
 
@@ -66,6 +87,8 @@ struct DfLine {
     size: String,
     #[serde(rename = "Reclaimable")]
     reclaimable: String,
+    #[serde(rename = "TotalCount", default)]
+    count: String,
 }
 
 fn parse_df(out: &str) -> Option<DockerUsage> {
@@ -75,15 +98,18 @@ fn parse_df(out: &str) -> Option<DockerUsage> {
         let Ok(l) = serde_json::from_str::<DfLine>(line) else {
             continue;
         };
-        let size = parse_size(&l.size)?;
-        match l.kind.as_str() {
-            "Images" => usage.images = size,
-            "Containers" => usage.containers = size,
-            "Local Volumes" => usage.volumes = size,
-            "Build Cache" => usage.build_cache = size,
+        let item = match l.kind.as_str() {
+            "Images" => &mut usage.images,
+            "Containers" => &mut usage.containers,
+            "Local Volumes" => &mut usage.volumes,
+            "Build Cache" => &mut usage.build_cache,
             _ => continue,
-        }
-        usage.reclaimable += parse_size(&l.reclaimable)?;
+        };
+        *item = DockerItem {
+            size: parse_size(&l.size)?,
+            reclaimable: parse_size(&l.reclaimable)?,
+            count: l.count.parse().unwrap_or(0),
+        };
         any = true;
     }
     any.then_some(usage)
@@ -130,12 +156,21 @@ mod tests {
 {"Active":"0","Reclaimable":"39.88GB","Size":"58.68GB","TotalCount":"252","Type":"Build Cache"}
 "#;
         let u = parse_df(out).unwrap();
-        assert_eq!(u.images, 21_650_000_000);
-        assert_eq!(u.containers, 113_100_000);
-        assert_eq!(u.volumes, 16_710_000_000);
-        assert_eq!(u.build_cache, 58_680_000_000);
         assert_eq!(
-            u.reclaimable,
+            u.images,
+            DockerItem {
+                size: 21_650_000_000,
+                reclaimable: 18_180_000_000,
+                count: 37
+            }
+        );
+        assert_eq!(u.containers.size, 113_100_000);
+        assert_eq!(u.volumes.size, 16_710_000_000);
+        assert_eq!(u.volumes.count, 56);
+        assert_eq!(u.build_cache.size, 58_680_000_000);
+        assert_eq!(u.build_cache.reclaimable, 39_880_000_000);
+        assert_eq!(
+            u.reclaimable(),
             18_180_000_000 + 113_100_000 + 16_710_000_000 + 39_880_000_000
         );
         assert_eq!(u.total(), 97_153_100_000);

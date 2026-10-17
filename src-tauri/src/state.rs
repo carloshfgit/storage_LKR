@@ -2,6 +2,7 @@
 //! (os commands só repassam eventos para o `Channel`), o que permite testar tudo
 //! com `cargo test`.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -105,6 +106,17 @@ impl AppState {
         self.lock_last().clone()
     }
 
+    /// Se `path` é um dos arquivos listados no último scan. Toda ação sobre um arquivo
+    /// vindo da UI passa por aqui: caminhos inventados ou não UTF-8 (que voltam com `�`,
+    /// DECISIONS D26) são recusados.
+    pub fn contains_file(&self, path: &Path) -> bool {
+        self.lock_last().as_ref().is_some_and(|r| {
+            r.categories
+                .values()
+                .any(|c| c.top.iter().any(|f| f.path == path))
+        })
+    }
+
     fn lock_last(&self) -> MutexGuard<'_, Option<ScanResult>> {
         self.last.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -112,11 +124,11 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use scanner::Category;
+    use scanner::{Category, DockerItem};
 
     use super::*;
 
@@ -139,7 +151,10 @@ mod tests {
     fn fake_docker(total: u64) -> DockerQuery {
         Box::new(move || {
             Some(DockerUsage {
-                images: total,
+                images: DockerItem {
+                    size: total,
+                    ..Default::default()
+                },
                 ..Default::default()
             })
         })
@@ -260,7 +275,10 @@ mod tests {
         let slow_docker: DockerQuery = Box::new(move || {
             release_rx.recv().unwrap();
             Some(DockerUsage {
-                images: 999,
+                images: DockerItem {
+                    size: 999,
+                    ..Default::default()
+                },
                 ..Default::default()
             })
         });
@@ -283,6 +301,28 @@ mod tests {
         // Dá tempo para o Docker antigo terminar e confirma que ele não sobrescreveu nada.
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
         assert_eq!(state.last_result().unwrap().docker_bytes, 7);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn contains_file_only_accepts_files_from_last_scan() {
+        let dir = temp_home("contains");
+        let state = Arc::new(AppState::default());
+        let foto = dir.join("foto.jpg");
+        assert!(!state.contains_file(&foto), "sem scan, nada é aceito");
+
+        let (tx, rx) = mpsc::channel();
+        state
+            .start_scan(options(&dir), fake_docker(0), move |e| tx.send(e).unwrap())
+            .unwrap();
+        collect(&rx);
+
+        assert!(state.contains_file(&foto));
+        assert!(!state.contains_file(&dir.join("outro.jpg")));
+        assert!(!state.contains_file(Path::new("/etc/passwd")));
+        // Um caminho não UTF-8 volta da UI com `�` e não casa com o real.
+        assert!(!state.contains_file(&dir.join("foto\u{fffd}.jpg")));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

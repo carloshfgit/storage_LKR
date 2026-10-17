@@ -38,6 +38,8 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D28](#d28) | SvelteKit em modo SPA no lugar de Svelte puro | ✅ | 0–3 |
 | [D29](#d29) | Barra ao vivo com faixa "ainda não contado" | ✅ | 4 |
 | [D30](#d30) | Reescanear zera a barra; cancelar volta ao resultado anterior | ✅ | 4 |
+| [D31](#d31) | "Abrir na pasta" como command próprio, validado no Rust | ✅ | 5 |
+| [D32](#d32) | Docker com tamanho e liberável por tipo | ✅ | 5 |
 
 ---
 
@@ -312,7 +314,7 @@ Volumes só são exibidos, **sem botão**.
 ### D25 — Permissão explícita por command <a id="d25"></a>
 **Decisão:** o `build.rs` declara os commands no `AppManifest` do Tauri, e `capabilities/default.json` libera cada um por nome (`allow-start-scan`, etc.). O `opener:default` do template foi removido.
 
-**Por quê:** sem o manifesto, o Tauri v2 libera para a janela todo command registrado. Com ele, um command novo só fica acessível depois de entrar explicitamente na capability. Isso importa a partir da Etapa 6, quando houver commands que apagam coisas (D19). O `opener:default` permitia abrir URLs e arquivos arbitrários; só `allow-reveal-item-in-dir` será necessário, na Etapa 5.
+**Por quê:** sem o manifesto, o Tauri v2 libera para a janela todo command registrado. Com ele, um command novo só fica acessível depois de entrar explicitamente na capability. Isso importa a partir da Etapa 6, quando houver commands que apagam coisas (D19). O `opener:default` permitia abrir URLs e arquivos arbitrários. Na Etapa 5, nem o `allow-reveal-item-in-dir` foi preciso (D31).
 
 ### D26 — Caminhos não UTF-8 serializados com perdas <a id="d26"></a>
 **Decisão:** `FileEntry.path` e `DiskInfo.mount` são serializados com `to_string_lossy`. Bytes inválidos viram `�`.
@@ -356,4 +358,22 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 **Decisão:** "Reescanear" relê `disk_info` e recomeça a barra do zero. Se o scan for cancelado, a tela volta ao último resultado completo, com o `DiskInfo` dele. Sem resultado anterior, fica o parcial, com a faixa "ainda não contado" parada.
 
 **Por quê:** um scan cancelado não tem o restante, então a barra dele não soma 100%. Mostrar o resultado anterior mantém a promessa de D05 sempre que existe um. O `DiskInfo` volta junto para o "Livre" bater com as categorias daquele scan.
+
+---
+
+## Detalhe da categoria
+
+### D31 — "Abrir na pasta" como command próprio <a id="d31"></a>
+**Decisão:** o `reveal(path)` é um command do app. Ele só aceita caminhos que constem no último scan (`AppState::contains_file`) e então chama `tauri_plugin_opener::reveal_item_in_dir` pelo Rust. A janela não recebe nenhuma permissão do plugin opener.
+
+**Por quê:** a permissão `opener:allow-reveal-item-in-dir` deixaria o JavaScript revelar qualquer caminho. O risco é baixo, mas D19 vale para todo caminho vindo da UI, e a mesma checagem será usada pelo `move_to_trash` na Etapa 6. De quebra, nomes não UTF-8 (D26) são recusados: o caminho com `�` não casa com o real.
+
+**Detalhes:** o command é `async` porque a chamada D-Bus ao `FileManager1` bloqueia, e commands síncronos rodam na thread principal da janela.
+
+**Descartado:** chamar o plugin direto do frontend com a permissão do opener.
+
+### D32 — Docker com tamanho e liberável por tipo <a id="d32"></a>
+**Decisão:** `DockerUsage` passou de 4 tamanhos e um liberável total para 4 `DockerItem { size, reclaimable, count }`, um por linha do `docker system df`.
+
+**Por quê:** o card do Docker mostra cada tipo com o quanto dá para liberar. As ações da Etapa 6 são por tipo (build cache, imagens), e volumes, mesmo liberáveis para o Docker, nunca são removidos pelo app (D18). Um total único misturaria essas coisas.
 

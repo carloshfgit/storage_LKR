@@ -112,11 +112,11 @@ fn main() -> ExitCode {
         println!(
             "docker:         {} (imagens {}, containers {}, volumes {}, build cache {}; liberável {})",
             gb(d.total()),
-            gb(d.images),
-            gb(d.containers),
-            gb(d.volumes),
-            gb(d.build_cache),
-            gb(d.reclaimable)
+            gb(d.images.size),
+            gb(d.containers.size),
+            gb(d.volumes.size),
+            gb(d.build_cache.size),
+            gb(d.reclaimable())
         );
     }
     let secs = walk_ms as f64 / 1000.0;

@@ -1,7 +1,7 @@
 //! Commands expostos ao frontend. Só repassam para o `AppState`; a lista que o
 //! frontend pode chamar está em `build.rs` e `capabilities/default.json`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use scanner::{Category, DEFAULT_DOCKER_TIMEOUT, DiskInfo, FileEntry, ScanOptions, docker_usage};
@@ -54,4 +54,15 @@ pub fn category_files(
         .get(&category)
         .map(|c| c.top.clone())
         .unwrap_or_default())
+}
+
+/// Abre o gerenciador de arquivos com `path` selecionado. Só aceita arquivos do último
+/// scan. `async` porque a chamada D-Bus ao Nautilus bloqueia, e commands síncronos
+/// rodam na thread principal.
+#[tauri::command(async)]
+pub fn reveal(state: State<'_, Arc<AppState>>, path: PathBuf) -> Result<(), String> {
+    if !state.contains_file(&path) {
+        return Err("arquivo fora do último scan".into());
+    }
+    tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| e.to_string())
 }

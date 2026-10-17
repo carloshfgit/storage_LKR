@@ -14,6 +14,7 @@
   } from "$lib/api";
   import { CATEGORY_COLORS, CATEGORY_LABELS, type Segment } from "$lib/categories";
   import { formatBytes, formatCount, formatSeconds } from "$lib/format";
+  import CategoryDetail from "$lib/CategoryDetail.svelte";
   import Legend from "$lib/Legend.svelte";
   import StorageBar from "$lib/StorageBar.svelte";
 
@@ -30,8 +31,17 @@
   let dockerPending = $state(false);
   /** Ignora eventos atrasados de um Channel de scan anterior. */
   let scanId = 0;
+  /** Categoria aberta no detalhe. */
+  let selected = $state<Category | null>(null);
 
   const showLive = $derived(phase === "scanning" || !result);
+  // O detalhe lê o último resultado completo; durante o scan ele ainda não existe.
+  const onselect = $derived(showLive ? undefined : open);
+
+  function open(key: Category) {
+    selected = key;
+    window.scrollTo(0, 0);
+  }
 
   const segments = $derived.by((): Segment[] =>
     CATEGORIES.map((key) => {
@@ -49,6 +59,8 @@
       return segment;
     }),
   );
+
+  const detail = $derived(selected && !showLive ? segments.find((s) => s.key === selected) : undefined);
 
   const free = $derived(disk?.available_bytes ?? 0);
   const used = $derived(disk ? disk.total_bytes - disk.available_bytes : 0);
@@ -127,43 +139,50 @@
 </script>
 
 <main>
-  <header>
-    <h1>Armazenamento</h1>
-    {#if disk}
-      <p class="disk">{diskName}{#if disk.device}<span> · {disk.device}</span>{/if}</p>
-    {/if}
-  </header>
+  {#if detail && result}
+    <CategoryDetail segment={detail} {result} {dockerPending} {total} onback={() => (selected = null)} />
+  {/if}
 
-  <section class="card">
-    <p class="usage">
+  <!-- Escondida, não desmontada: a barra volta do detalhe sem refazer a animação. -->
+  <div hidden={!!detail}>
+    <header>
+      <h1>Armazenamento</h1>
       {#if disk}
-        <strong>{formatBytes(used)}</strong> de {formatBytes(disk.total_bytes)} usados
-      {:else}
-        Lendo o disco…
+        <p class="disk">{diskName}{#if disk.device}<span> · {disk.device}</span>{/if}</p>
       {/if}
-    </p>
+    </header>
 
-    <StorageBar {segments} {free} {total} scanning={phase === "scanning"} />
+    <section class="card">
+      <p class="usage">
+        {#if disk}
+          <strong>{formatBytes(used)}</strong> de {formatBytes(disk.total_bytes)} usados
+        {:else}
+          Lendo o disco…
+        {/if}
+      </p>
 
-    <div class="status" aria-live="polite">
-      {#if phase === "scanning"}
-        <span class="spinner" aria-hidden="true"></span>
-        <span>Escaneando… {formatCount(liveFiles)} arquivos</span>
-        <button onclick={cancel}>Cancelar</button>
-      {:else if phase === "done" && result}
-        <span>{formatCount(result.files)} arquivos analisados em {formatSeconds(result.elapsed_ms)}</span>
-        <button onclick={scan}>Reescanear</button>
-      {:else if phase === "cancelled"}
-        <span>Escaneamento cancelado{#if result} · mostrando o anterior{/if}</span>
-        <button onclick={scan}>Reescanear</button>
-      {:else if phase === "error"}
-        <span class="error">Erro: {errorMessage}</span>
-        <button onclick={scan}>Tentar de novo</button>
-      {/if}
-    </div>
+      <StorageBar {segments} {free} {total} scanning={phase === "scanning"} {onselect} />
 
-    <Legend {segments} {free} {total} />
-  </section>
+      <div class="status" aria-live="polite">
+        {#if phase === "scanning"}
+          <span class="spinner" aria-hidden="true"></span>
+          <span>Escaneando… {formatCount(liveFiles)} arquivos</span>
+          <button onclick={cancel}>Cancelar</button>
+        {:else if phase === "done" && result}
+          <span>{formatCount(result.files)} arquivos analisados em {formatSeconds(result.elapsed_ms)}</span>
+          <button onclick={scan}>Reescanear</button>
+        {:else if phase === "cancelled"}
+          <span>Escaneamento cancelado{#if result} · mostrando o anterior{/if}</span>
+          <button onclick={scan}>Reescanear</button>
+        {:else if phase === "error"}
+          <span class="error">Erro: {errorMessage}</span>
+          <button onclick={scan}>Tentar de novo</button>
+        {/if}
+      </div>
+
+      <Legend {segments} {free} {total} {onselect} />
+    </section>
+  </div>
 </main>
 
 <style>

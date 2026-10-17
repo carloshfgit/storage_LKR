@@ -13,7 +13,15 @@
     free,
     total,
     scanning,
-  }: { segments: Segment[]; free: number; total: number; scanning: boolean } = $props();
+    onselect,
+  }: {
+    segments: Segment[];
+    free: number;
+    total: number;
+    scanning: boolean;
+    /** Ausente enquanto não há resultado completo: os segmentos não são clicáveis. */
+    onselect?: (key: Category) => void;
+  } = $props();
 
   // Abaixo disso o segmento não é desenhado, para não sobrar só o vão entre vizinhos.
   const MIN_PCT = 0.05;
@@ -43,10 +51,17 @@
   );
 </script>
 
-<div class="bar" role="img" aria-label={label}>
+<div class="bar" role="group" aria-label={label}>
   {#each segments as s (s.key)}
     {#if widths[s.key].current > MIN_PCT}
-      <div class="segment" style:width="{widths[s.key].current}%" style:background={s.color}></div>
+      <button
+        class="segment"
+        style:width="{widths[s.key].current}%"
+        style:background={s.color}
+        disabled={!onselect}
+        onclick={() => onselect?.(s.key)}
+        aria-label="{s.label}: {formatBytes(s.bytes)}"
+      ></button>
     {/if}
   {/each}
   {#if pendingPct > MIN_PCT}
@@ -71,6 +86,18 @@
   .segment {
     flex: 0 1 auto;
     min-width: 0;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+  }
+
+  button.segment:enabled {
+    cursor: pointer;
+    transition: filter 0.15s var(--ease);
+  }
+
+  button.segment:enabled:hover {
+    filter: brightness(1.12);
   }
 
   .free {

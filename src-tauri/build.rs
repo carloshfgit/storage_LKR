@@ -1,6 +1,12 @@
 /// Commands do app. Declará-los aqui faz o Tauri exigir permissão explícita para cada um
 /// (`allow-<command>` em `capabilities/default.json`), em vez de liberar todos por padrão.
-const COMMANDS: &[&str] = &["disk_info", "start_scan", "cancel_scan", "category_files"];
+const COMMANDS: &[&str] = &[
+    "disk_info",
+    "start_scan",
+    "cancel_scan",
+    "category_files",
+    "reveal",
+];
 
 fn main() {
     tauri_build::try_build(

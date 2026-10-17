@@ -186,7 +186,9 @@ docker system df --format json      # uma linha JSON por tipo: Images, Container
 ```
 
 ```rust
-pub struct DockerUsage { images: u64, containers: u64, volumes: u64, build_cache: u64, reclaimable: u64 }
+pub struct DockerItem { size: u64, reclaimable: u64, count: u64 }   // uma linha do `docker system df`
+pub struct DockerUsage { images: DockerItem, containers: DockerItem, volumes: DockerItem, build_cache: DockerItem }
+// total() = Σ size; reclaimable() = Σ reclaimable
 ```
 
 - `docker_usage(timeout)` roda o comando com timeout de 20 s (`DEFAULT_DOCKER_TIMEOUT`). Se o binário não existir, o daemon estiver parado ou faltar permissão, o resultado é `None` e o app segue sem Docker, sem erro.
@@ -207,10 +209,10 @@ pub struct DockerUsage { images: u64, containers: u64, volumes: u64, build_cache
 | `category_files` | `(cat: Category) -> Vec<FileEntry>` | Top-N do último resultado |
 | `move_to_trash` | `(paths: Vec<PathBuf>) -> TrashReport` | Validação abaixo |
 | `empty_trash` | `(confirm: bool) -> u64` | Exige `confirm == true` e devolve os bytes liberados |
-| `reveal` | `(path: PathBuf) -> ()` | `tauri_plugin_opener::reveal_item_in_dir` |
+| `reveal` | `(path: PathBuf) -> ()` | Só arquivos do último scan (`AppState::contains_file`), depois `tauri_plugin_opener::reveal_item_in_dir` (D-Bus `FileManager1.ShowItems` → Nautilus com o arquivo selecionado). `async`, porque a chamada D-Bus bloqueia |
 | `docker_prune` | `(target: DockerTarget, confirm: bool) -> u64` | `DockerTarget` = `BuildCache` \| `UnusedImages`. Devolve os bytes liberados (releitura de `statvfs`) |
 
-Status: `disk_info`, `start_scan`, `cancel_scan` e `category_files` estão ✅ implementados (Etapa 3). Os demais entram nas Etapas 5 e 6.
+Status: `disk_info`, `start_scan`, `cancel_scan` e `category_files` estão ✅ implementados (Etapa 3), e `reveal` (Etapa 5). Os demais entram na Etapa 6.
 
 ```rust
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -242,7 +244,7 @@ Depois de `move_to_trash`, cada item sai do top-N e do total da sua categoria e 
 - `move_to_trash`: o caminho é canonicalizado (`fs::canonicalize`) e precisa estar sob `$HOME`, **não** casar a regra 1 (`is_app_path`: sistema e apps gerenciados; apps portáteis podem ir para a Lixeira) e constar no último `ScanResult`. Caminhos que falham são rejeitados e listados no `TrashReport`.
 - Nunca há `remove_file` direto. O único apagamento permanente é `empty_trash`, que exige confirmação explícita.
 - `docker_prune` só executa comandos fixos, sem argumento vindo da UI: `docker builder prune -f` e `docker image prune -a -f`. **Volumes nunca são apagados pelo app**, porque guardam dados (bancos, uploads); eles só aparecem com o tamanho e a dica `docker volume ls`.
-- **Permissões:** o `build.rs` declara os commands no `AppManifest`. Com isso, o Tauri passa a exigir a permissão `allow-<command>` de cada um, em vez de liberar todos os commands registrados. `capabilities/default.json` lista só `core:default` e essas permissões. O `opener:default` do template foi removido; `opener:allow-reveal-item-in-dir` entra na Etapa 5 (DECISIONS D25).
+- **Permissões:** o `build.rs` declara os commands no `AppManifest`. Com isso, o Tauri passa a exigir a permissão `allow-<command>` de cada um, em vez de liberar todos os commands registrados. `capabilities/default.json` lista só `core:default` e essas permissões. O `opener:default` do template foi removido e nenhuma permissão do opener é dada à janela: o `reveal` é um command próprio, que valida o caminho antes de chamar o plugin pelo Rust (DECISIONS D25, D31).
 - **Caminhos não UTF-8** (válidos no Linux) são serializados com perdas (`�`) para não derrubar o resultado inteiro (DECISIONS D26). Na Etapa 6, as ações sobre esses arquivos precisam ser recusadas, já que o caminho recebido de volta não é o real.
 
 ---
@@ -251,11 +253,11 @@ Depois de `move_to_trash`, cada item sai do top-N e do total da sua categoria e 
 
 | Componente | Responsabilidade |
 |---|---|
-| `routes/+page.svelte` | Orquestra o estado (`idle` / `scanning` / `done` / `cancelled` / `error`), monta os segmentos e, na Etapa 5, a navegação para o detalhe. Escaneia ao abrir |
-| `StorageBar.svelte` | Barra única, em ordem fixa: as 6 categorias, a faixa "ainda não contado" e "Livre" na ponta direita. Cada largura é um `Tween` (600 ms, `cubicOut`) redirecionado a cada `progress`. Vãos de 2px com a cor do card separam os segmentos. Clicar abre o detalhe (Etapa 5) |
+| `routes/+page.svelte` | Orquestra o estado (`idle` / `scanning` / `done` / `cancelled` / `error`), monta os segmentos e alterna entre a tela principal e o detalhe. A tela principal fica escondida, não desmontada, para a barra não refazer a animação na volta. Escaneia ao abrir |
+| `StorageBar.svelte` | Barra única, em ordem fixa: as 6 categorias, a faixa "ainda não contado" e "Livre" na ponta direita. Cada largura é um `Tween` (600 ms, `cubicOut`) redirecionado a cada `progress`. Vãos de 2px com a cor do card separam os segmentos. Clicar num segmento abre o detalhe |
 | `Legend.svelte` | Linhas com bolinha de cor, nome, tamanho e porcentagem do disco, ordenadas por bytes (`animate:flip`) e com "Livre" por último. Apps/Sistema traz a composição: Docker e reservado/sem acesso |
-| `CategoryDetail.svelte` | Lista dos maiores arquivos com checkbox, "Abrir na pasta" e "Mover para Lixeira", e um rodapé com o total selecionado. Em Outros aparece o card "Lixeira — X GB · Esvaziar"; em Apps/Sistema, os cards "Docker" (imagens, containers, volumes e build cache, com ações de limpeza) e "Reservado / sem acesso" |
-| `FileRow.svelte` | Nome, caminho abreviado (`~/…`), tamanho e data relativa |
+| `CategoryDetail.svelte` | Aberto ao clicar num segmento da barra ou numa linha da legenda (só com um resultado completo). Mostra o total, a porcentagem e a contagem, e lista o top-N de `category_files`, ordenado por tamanho ou por data. Em Outros aparece o card "Lixeira"; em Apps/Sistema, os cards "Docker" (imagens, containers, volumes e build cache, cada um com tamanho, quantidade e liberável; some sem Docker) e "Reservado / sem acesso". Voltar: botão ou `Esc`. Na Etapa 6 ganha checkbox, "Mover para Lixeira", o rodapé com o total selecionado e as ações dos cards |
+| `FileRow.svelte` | Nome, pasta abreviada (`~/…`, via `homeDir()`), tamanho, data relativa e o botão "Abrir na pasta". Desabilitado para nomes não UTF-8, que chegam com `�` (D26) |
 | `api.ts` | `startScan(onEvent)` com `new Channel<ScanEvent>()` e wrappers tipados |
 | `categories.ts` | Nome (espelha `Category::label`) e token de cor de cada categoria, mais o tipo `Segment` usado pela barra e pela legenda |
 | `format.ts` | Unidades decimais (1 GB = 10⁹ B, como GNOME/iOS) com 3 algarismos significativos e casas fixas, porcentagem, contagem e segundos, tudo via `Intl.NumberFormat('pt-BR')` |

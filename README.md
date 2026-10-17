@@ -35,7 +35,7 @@ O passo a passo completo, com pré-requisitos, a CLI de benchmark, o build do `.
 | 2. Classificação + Docker | ✅ | "Sem acesso" caiu de 106 GB para 9 GB |
 | 3. Ponte Tauri | ✅ | Eventos `progress`/`done`/`docker` pelo Channel |
 | 4. Tela principal | ✅ | Barra ao vivo, legenda e tema claro/escuro (falta a conferência visual) |
-| 5. Detalhe da categoria | | |
+| 5. Detalhe da categoria | ✅ | Maiores arquivos, "Abrir na pasta" e cards Docker/Lixeira (falta a conferência visual) |
 | 6. Ações de limpeza | | |
 | 7. Polimento e pacote `.deb` | | |
 

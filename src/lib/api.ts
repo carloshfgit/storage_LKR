@@ -30,12 +30,19 @@ export interface CategoryStats {
   top: FileEntry[];
 }
 
-export interface DockerUsage {
-  images: number;
-  containers: number;
-  volumes: number;
-  build_cache: number;
+/** Uma linha do `docker system df`. */
+export interface DockerItem {
+  size: number;
+  /** O que o Docker considera removível (sem uso ativo). */
   reclaimable: number;
+  count: number;
+}
+
+export interface DockerUsage {
+  images: DockerItem;
+  containers: DockerItem;
+  volumes: DockerItem;
+  build_cache: DockerItem;
 }
 
 export interface ScanResult {
@@ -75,4 +82,9 @@ export function cancelScan(): Promise<void> {
 
 export function categoryFiles(category: Category): Promise<FileEntry[]> {
   return invoke("category_files", { category });
+}
+
+/** Abre o gerenciador de arquivos com o arquivo selecionado. Só vale para arquivos do último scan. */
+export function reveal(path: string): Promise<void> {
+  return invoke("reveal", { path });
 }

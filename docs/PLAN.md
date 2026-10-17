@@ -142,12 +142,18 @@ Total + restante = `df` por construção. O restante (106 GB) é real: são dire
 ---
 
 ## Etapa 5 — Detalhe da categoria
-- [ ] `CategoryDetail` + `FileRow`: top-N ordenado por tamanho, com alternância para ordenar por data.
-- [ ] "Abrir na pasta" via `reveal` (`tauri-plugin-opener`).
-- [ ] Cards especiais: "Docker" e "Reservado / sem acesso" (Apps/Sistema) e "Lixeira" (Outros).
-- [ ] O card Docker mostra imagens, containers, volumes e build cache, cada um com tamanho e quanto é liberável. Quando não há Docker, o card não aparece.
+- [x] `CategoryDetail` + `FileRow`: top-N ordenado por tamanho, com alternância para ordenar por data.
+- [x] "Abrir na pasta" via `reveal` (`tauri-plugin-opener`), validado no Rust (DECISIONS D31).
+- [x] Cards especiais: "Docker" e "Reservado / sem acesso" (Apps/Sistema) e "Lixeira" (Outros).
+- [x] O card Docker mostra imagens, containers, volumes e build cache, cada um com tamanho e quanto é liberável (D32). Quando não há Docker, o card não aparece.
 
 **Pronto quando:** clicar no segmento "Vídeos" lista os maiores vídeos, e "Abrir na pasta" abre o Nautilus com o arquivo selecionado.
+
+**Resultado (17/10/2026):**
+- O detalhe abre pelo segmento da barra ou pela linha da legenda, só com um resultado completo. Volta pelo botão ou `Esc`, sem refazer a animação da barra.
+- `reveal` recusa caminhos fora do último scan, inclusive nomes não UTF-8. Novo teste da ponte cobre isso.
+- Workspace: 34 testes passam, clippy limpo, `npm run check` sem erros.
+- ⏳ **Falta a conferência visual** (clicar em "Vídeos" e em "Abrir na pasta"), que precisa ser feita por você.
 
 ---
 

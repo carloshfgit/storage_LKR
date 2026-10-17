@@ -9,6 +9,6 @@ mod walk;
 
 pub use classify::Classifier;
 pub use disk::disk_info;
-pub use docker::{DEFAULT_DOCKER_TIMEOUT, DockerUsage, docker_usage};
+pub use docker::{DEFAULT_DOCKER_TIMEOUT, DockerItem, DockerUsage, docker_usage};
 pub use model::{Category, CategoryStats, DiskInfo, FileEntry, ScanProgress, ScanResult};
 pub use walk::{ScanError, ScanOptions, scan};

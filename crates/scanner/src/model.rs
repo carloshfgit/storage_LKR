@@ -128,6 +128,7 @@ fn lossy_path<S: Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::docker::DockerItem;
 
     fn result(unaccounted: u64) -> ScanResult {
         ScanResult {
@@ -150,7 +151,10 @@ mod tests {
 
     fn docker(total: u64) -> DockerUsage {
         DockerUsage {
-            images: total,
+            images: DockerItem {
+                size: total,
+                ..Default::default()
+            },
             ..Default::default()
         }
     }

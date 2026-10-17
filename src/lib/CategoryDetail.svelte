@@ -1,0 +1,344 @@
+<!-- Detalhe de uma categoria: total, cards especiais e os maiores arquivos do último scan. -->
+<script lang="ts">
+  import { homeDir } from "@tauri-apps/api/path";
+  import { categoryFiles, reveal, type DockerItem, type FileEntry, type ScanResult } from "./api";
+  import type { Segment } from "./categories";
+  import { formatBytes, formatCount, formatPercent } from "./format";
+  import FileRow from "./FileRow.svelte";
+
+  let {
+    segment,
+    result,
+    dockerPending,
+    total,
+    onback,
+  }: {
+    segment: Segment;
+    result: ScanResult;
+    dockerPending: boolean;
+    total: number;
+    onback: () => void;
+  } = $props();
+
+  let files = $state.raw<FileEntry[] | null>(null);
+  let loadError = $state("");
+  let revealError = $state("");
+  let home = $state("");
+  let sortBy = $state<"size" | "date">("size");
+
+  const sorted = $derived(
+    !files ? [] : sortBy === "size" ? files : [...files].sort((a, b) => b.modified - a.modified),
+  );
+  const stats = $derived(result.categories[segment.key]);
+
+  // Só a chave: o `segment` é recriado a cada evento (o `docker`, por exemplo) e não
+  // deve recarregar a lista.
+  const key = $derived(segment.key);
+
+  $effect(() => {
+    const requested = key;
+    files = null;
+    loadError = "";
+    categoryFiles(requested).then(
+      (list) => requested === key && (files = list),
+      (err) => (loadError = String(err)),
+    );
+  });
+
+  homeDir().then(
+    (dir) => (home = dir.replace(/\/$/, "")),
+    () => {},
+  );
+
+  async function onreveal(path: string) {
+    revealError = "";
+    try {
+      await reveal(path);
+    } catch (err) {
+      revealError = `Não foi possível abrir a pasta: ${err}`;
+    }
+  }
+
+  const dockerRows = $derived.by(() => {
+    const d = result.docker;
+    if (!d) return [];
+    const rows: { label: string; item: DockerItem; noun: [string, string]; hint?: string }[] = [
+      { label: "Imagens", item: d.images, noun: ["imagem", "imagens"] },
+      { label: "Containers", item: d.containers, noun: ["container", "containers"] },
+      {
+        label: "Volumes",
+        item: d.volumes,
+        noun: ["volume", "volumes"],
+        hint: "Guardam dados (bancos, uploads) e nunca são removidos pelo app. Veja com docker volume ls.",
+      },
+      { label: "Build cache", item: d.build_cache, noun: ["entrada", "entradas"] },
+    ];
+    return rows;
+  });
+  const dockerReclaimable = $derived(dockerRows.reduce((sum, r) => sum + r.item.reclaimable, 0));
+</script>
+
+<svelte:window onkeydown={(e) => e.key === "Escape" && onback()} />
+
+<button class="back" onclick={onback}>
+  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5" /></svg>
+  Armazenamento
+</button>
+
+<header>
+  <h1><span class="dot" style:background={segment.color}></span>{segment.label}</h1>
+  <p>
+    <strong>{formatBytes(segment.bytes)}</strong>
+    · {formatPercent(total > 0 ? segment.bytes / total : 0)} do disco
+    {#if stats}· {formatCount(stats.files)} arquivos{/if}
+  </p>
+</header>
+
+{#if segment.key === "apps_system"}
+  {#if dockerPending}
+    <section class="card info">
+      <h2>Docker</h2>
+      <p class="muted">Consultando o Docker…</p>
+    </section>
+  {:else if result.docker}
+    <section class="card info">
+      <h2>
+        Docker
+        <span>{formatBytes(result.docker_bytes)} · {formatBytes(dockerReclaimable)} liberáveis</span>
+      </h2>
+      <ul class="rows">
+        {#each dockerRows as row (row.label)}
+          <li>
+            <span class="label">
+              {row.label}
+              <small>
+                {formatCount(row.item.count)} {row.noun[row.item.count === 1 ? 0 : 1]}
+                · {formatBytes(row.item.reclaimable)} liberáveis
+              </small>
+              {#if row.hint}<small>{row.hint}</small>{/if}
+            </span>
+            <span class="value">{formatBytes(row.item.size)}</span>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+
+  {#if result.unaccounted_bytes > 0}
+    <section class="card info">
+      <h2>Reservado / sem acesso <span>{formatBytes(result.unaccounted_bytes)}</span></h2>
+      <p class="muted">
+        Blocos reservados pelo sistema de arquivos, metadados e pastas que só o administrador lê
+        ({formatCount(result.denied_dirs)} pastas sem acesso). Não pode ser limpo por aqui.
+      </p>
+    </section>
+  {/if}
+{:else if segment.key === "other" && result.trash_bytes > 0}
+  <section class="card info">
+    <h2>Lixeira <span>{formatBytes(result.trash_bytes)}</span></h2>
+    <p class="muted">Arquivos na Lixeira continuam ocupando espaço até ela ser esvaziada.</p>
+  </section>
+{/if}
+
+<section class="card">
+  <div class="list-header">
+    <h2>{segment.key === "apps_system" ? "Maiores arquivos escaneados" : "Maiores arquivos"}</h2>
+    <div class="segmented" role="group" aria-label="Ordenar por">
+      <button class:active={sortBy === "size"} onclick={() => (sortBy = "size")}>Tamanho</button>
+      <button class:active={sortBy === "date"} onclick={() => (sortBy = "date")}>Data</button>
+    </div>
+  </div>
+
+  {#if revealError}
+    <p class="error">{revealError}</p>
+  {/if}
+
+  {#if loadError}
+    <p class="error">Erro ao carregar os arquivos: {loadError}</p>
+  {:else if !files}
+    <p class="muted">Carregando…</p>
+  {:else if files.length === 0}
+    <p class="muted">Nenhum arquivo nesta categoria.</p>
+  {:else}
+    <ul class="files">
+      {#each sorted as file (file.path)}
+        <FileRow {file} {home} {onreveal} />
+      {/each}
+    </ul>
+    <p class="footnote">
+      Os {formatCount(files.length)} maiores arquivos{#if sortBy === "date"}, do mais recente ao mais antigo{/if}.
+    </p>
+  {/if}
+</section>
+
+<style>
+  .back {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin: 0 0 8px -6px;
+    padding: 4px 8px 4px 2px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--accent);
+    font-size: 15px;
+    cursor: pointer;
+  }
+
+  .back:hover {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+
+  .back svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  header {
+    margin-bottom: 16px;
+  }
+
+  h1 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    font-size: 28px;
+    font-weight: 700;
+  }
+
+  h1 .dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+  }
+
+  header p {
+    margin: 2px 0 0;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  header strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .card {
+    margin-bottom: 14px;
+    padding: 14px 20px;
+    background: var(--surface);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+
+  h2 {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  h2 span {
+    color: var(--text-secondary);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .info p {
+    margin: 6px 0 0;
+  }
+
+  .muted,
+  .footnote {
+    color: var(--text-secondary);
+    font-size: 13px;
+  }
+
+  .footnote {
+    margin: 8px 0 0;
+  }
+
+  .error {
+    color: var(--danger);
+    font-size: 13px;
+  }
+
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .rows {
+    margin-top: 6px;
+  }
+
+  .rows li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 0;
+    border-top: 1px solid var(--separator);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rows li:first-child {
+    border-top: none;
+  }
+
+  .label {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .label small {
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .value {
+    font-weight: 500;
+  }
+
+  .list-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+
+  .segmented {
+    display: flex;
+    padding: 2px;
+    border-radius: 8px;
+    background: var(--track);
+  }
+
+  .segmented button {
+    padding: 3px 12px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background var(--duration) var(--ease);
+  }
+
+  .segmented button.active {
+    background: var(--surface);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+    font-weight: 600;
+  }
+</style>

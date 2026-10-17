@@ -52,3 +52,27 @@ export function formatCount(n: number): string {
 export function formatSeconds(ms: number): string {
   return `${fixed(1).format(ms / 1000)} s`;
 }
+
+const relative = new Intl.RelativeTimeFormat("pt-BR", { numeric: "auto" });
+
+const STEPS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ["minute", 60],
+  ["hour", 60],
+  ["day", 24],
+  ["month", 30],
+  ["year", 12],
+];
+
+/** mtime em segundos Unix → "há 3 dias", "ontem", "há 2 anos". */
+export function formatRelativeDate(unixSeconds: number, now = Date.now()): string {
+  if (unixSeconds <= 0) return "—";
+  let value = (unixSeconds * 1000 - now) / 1000;
+  if (Math.abs(value) < 60) return "agora";
+  let unit: Intl.RelativeTimeFormatUnit = "second";
+  for (const [next, factor] of STEPS) {
+    if (Math.abs(value) < factor) break;
+    value /= factor;
+    unit = next;
+  }
+  return relative.format(Math.round(value), unit);
+}
