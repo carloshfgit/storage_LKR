@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use jwalk::{Parallelism, WalkDirGeneric};
 
-use crate::classify::classify;
+use crate::classify::Classifier;
 use crate::disk::disk_info;
 use crate::model::{Category, CategoryStats, FileEntry, ScanProgress, ScanResult};
 
@@ -39,7 +39,9 @@ impl ScanOptions {
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
         Self {
             root: root.into(),
-            home: std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default(),
+            home: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
             top_n: 200,
             // stat é limitado por I/O: mais threads que núcleos mantém a fila do SSD cheia.
             threads: threads * 2,
@@ -57,6 +59,7 @@ struct Counted {
     modified: i64,
     ino: u64,
     nlink: u64,
+    in_trash: bool,
 }
 
 type Walk = WalkDirGeneric<((), Option<Counted>)>;
@@ -68,13 +71,17 @@ pub fn scan(
     mut on_progress: impl FnMut(&ScanProgress),
 ) -> Result<ScanResult, ScanError> {
     let started = Instant::now();
-    let io_err = |source| ScanError::Io { path: opts.root.clone(), source };
+    let io_err = |source| ScanError::Io {
+        path: opts.root.clone(),
+        source,
+    };
 
     let disk = disk_info(&opts.root).map_err(io_err)?;
     let root_meta = fs::symlink_metadata(&opts.root).map_err(io_err)?;
     let root_dev = root_meta.dev();
 
-    let home = Arc::new(opts.home.clone());
+    let classifier = Arc::new(Classifier::new(&opts.home));
+    let walk_classifier = Arc::clone(&classifier);
     let walk = Walk::new(&opts.root)
         .skip_hidden(false)
         .follow_links(false)
@@ -96,17 +103,18 @@ pub fn scan(
                     continue;
                 }
                 child.client_state = Some(Counted {
-                    category: classify(&path, &home),
+                    category: walk_classifier.classify(&path),
                     bytes: meta.blocks() * 512,
                     modified: meta.mtime(),
                     ino: meta.ino(),
                     nlink: meta.nlink(),
+                    in_trash: walk_classifier.in_trash(&path),
                 });
             }
         });
 
     let mut agg = Aggregator::new(opts.top_n);
-    agg.add_bytes(classify(&opts.root, &opts.home), root_meta.blocks() * 512);
+    agg.add_bytes(classifier.classify(&opts.root), root_meta.blocks() * 512);
 
     let mut seen_hardlinks: HashSet<u64> = HashSet::new();
     let mut denied_dirs = 0u64;
@@ -119,10 +127,16 @@ pub fn scan(
         // Erros de entrada individual (arquivo sumiu durante o scan etc.) são ignorados.
         let Ok(entry) = entry else { continue };
 
-        if entry.read_children.as_ref().is_some_and(|r| r.error().is_some()) {
+        if entry
+            .read_children
+            .as_ref()
+            .is_some_and(|r| r.error().is_some())
+        {
             denied_dirs += 1;
         }
-        let Some(c) = entry.client_state else { continue };
+        let Some(c) = entry.client_state else {
+            continue;
+        };
 
         let is_dir = entry.file_type.is_dir();
         // Mesmo filesystem em todo o walk, então o inode sozinho identifica o arquivo.
@@ -130,6 +144,9 @@ pub fn scan(
             continue;
         }
 
+        if c.in_trash {
+            agg.trash_bytes += c.bytes;
+        }
         if is_dir {
             agg.add_bytes(c.category, c.bytes);
         } else {
@@ -144,6 +161,7 @@ pub fn scan(
 
     on_progress(&agg.progress());
     let files = agg.files;
+    let trash_bytes = agg.trash_bytes;
     let categories = agg.finish();
     let scanned: u64 = categories.values().map(|c| c.bytes).sum();
 
@@ -151,6 +169,9 @@ pub fn scan(
         unaccounted_bytes: disk.used_bytes().saturating_sub(scanned),
         disk,
         categories,
+        trash_bytes,
+        docker: None,
+        docker_bytes: 0,
         denied_dirs,
         files,
         elapsed_ms: started.elapsed().as_millis() as u64,
@@ -170,6 +191,7 @@ struct Aggregator {
     bytes: [u64; Category::COUNT],
     files_per_cat: [u64; Category::COUNT],
     files: u64,
+    trash_bytes: u64,
     /// Min-heap: o topo é o menor dos N maiores, descartado quando aparece um maior.
     top: [BinaryHeap<Reverse<TopItem>>; Category::COUNT],
 }
@@ -181,6 +203,7 @@ impl Aggregator {
             bytes: [0; Category::COUNT],
             files_per_cat: [0; Category::COUNT],
             files: 0,
+            trash_bytes: 0,
             top: Default::default(),
         }
     }
@@ -198,22 +221,38 @@ impl Aggregator {
 
         let heap = &mut self.top[i];
         if heap.len() < self.top_n {
-            heap.push(Reverse(TopItem { bytes: c.bytes, path: path(), modified: c.modified }));
+            heap.push(Reverse(TopItem {
+                bytes: c.bytes,
+                path: path(),
+                modified: c.modified,
+            }));
         } else if heap.peek().is_some_and(|Reverse(min)| c.bytes > min.bytes) {
             heap.pop();
-            heap.push(Reverse(TopItem { bytes: c.bytes, path: path(), modified: c.modified }));
+            heap.push(Reverse(TopItem {
+                bytes: c.bytes,
+                path: path(),
+                modified: c.modified,
+            }));
         }
     }
 
     fn progress(&self) -> ScanProgress {
         ScanProgress {
-            bytes: Category::ALL.iter().map(|&c| (c, self.bytes[c.index()])).collect(),
+            bytes: Category::ALL
+                .iter()
+                .map(|&c| (c, self.bytes[c.index()]))
+                .collect(),
             files: self.files,
         }
     }
 
     fn finish(self) -> HashMap<Category, CategoryStats> {
-        let Self { bytes, files_per_cat, top, .. } = self;
+        let Self {
+            bytes,
+            files_per_cat,
+            top,
+            ..
+        } = self;
         Category::ALL
             .into_iter()
             .zip(top)
@@ -222,7 +261,11 @@ impl Aggregator {
                 let top = heap
                     .into_sorted_vec()
                     .into_iter()
-                    .map(|Reverse(t)| FileEntry { path: t.path, bytes: t.bytes, modified: t.modified })
+                    .map(|Reverse(t)| FileEntry {
+                        path: t.path,
+                        bytes: t.bytes,
+                        modified: t.modified,
+                    })
                     .collect();
                 let stats = CategoryStats {
                     bytes: bytes[c.index()],
@@ -286,13 +329,53 @@ mod tests {
             write(&dir.join(format!("{i}.pdf")), len);
         }
         let mut opts = ScanOptions::new(&dir);
+        opts.home = dir.clone();
         opts.top_n = 2;
         let r = scan(&opts, |_| {}).unwrap();
 
         let docs = &r.categories[&Category::Documents];
         assert_eq!(docs.files, 4);
-        let names: Vec<_> = docs.top.iter().map(|f| f.path.file_name().unwrap().to_owned()).collect();
+        let names: Vec<_> = docs
+            .top
+            .iter()
+            .map(|f| f.path.file_name().unwrap().to_owned())
+            .collect();
         assert_eq!(names, ["2.pdf", "1.pdf"]);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn classifies_by_path_and_counts_trash() {
+        let dir = temp_dir("rules");
+        let home = dir.join("home");
+        let trash = home.join(".local/share/Trash/files");
+        fs::create_dir_all(&trash).unwrap();
+        fs::create_dir_all(home.join(".cache")).unwrap();
+        fs::create_dir_all(dir.join("usr")).unwrap();
+        write(&trash.join("velho.mp4"), 40_000);
+        write(&home.join(".cache/thumb.jpg"), 8_000);
+        write(&home.join("foto.jpg"), 8_000);
+        write(&dir.join("usr/icone.png"), 8_000);
+
+        let mut opts = ScanOptions::new(&dir);
+        opts.home = home.clone();
+        let r = scan(&opts, |_| {}).unwrap();
+
+        let files = |c: Category| -> Vec<PathBuf> {
+            r.categories[&c]
+                .top
+                .iter()
+                .map(|f| f.path.clone())
+                .collect()
+        };
+        assert_eq!(files(Category::Photos), [home.join("foto.jpg")]);
+        assert!(files(Category::Other).contains(&trash.join("velho.mp4")));
+        assert!(files(Category::Other).contains(&home.join(".cache/thumb.jpg")));
+        // Fora do $HOME de teste: Apps/Sistema.
+        assert!(files(Category::AppsSystem).contains(&dir.join("usr/icone.png")));
+        // A Lixeira conta o vídeo e os diretórios Trash/ e files/.
+        assert!(r.trash_bytes >= 40_000 && r.trash_bytes <= r.categories[&Category::Other].bytes);
 
         fs::remove_dir_all(&dir).unwrap();
     }

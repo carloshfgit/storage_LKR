@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::docker::DockerUsage;
+
 /// Categoria de um arquivo na barra. "Livre" não é uma categoria: vem do `statvfs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,7 +80,13 @@ pub struct CategoryStats {
 pub struct ScanResult {
     pub disk: DiskInfo,
     pub categories: HashMap<Category, CategoryStats>,
-    /// Usado no disco menos o que foi escaneado: dirs sem permissão, metadados e blocos reservados.
+    /// Parte de `Other` que está na Lixeira do usuário.
+    pub trash_bytes: u64,
+    /// Preenchido por [`ScanResult::apply_docker`]; a consulta roda à parte porque é lenta.
+    pub docker: Option<DockerUsage>,
+    /// Quanto do Docker foi descontado do restante (limitado ao próprio restante).
+    pub docker_bytes: u64,
+    /// Usado no disco menos o escaneado e o Docker: dirs sem permissão, metadados e blocos reservados.
     pub unaccounted_bytes: u64,
     pub denied_dirs: u64,
     pub files: u64,
@@ -89,10 +97,77 @@ impl ScanResult {
     pub fn scanned_bytes(&self) -> u64 {
         self.categories.values().map(|c| c.bytes).sum()
     }
+
+    /// Move o uso do Docker do restante para um subitem de Apps/Sistema.
+    ///
+    /// O Docker relata tamanho lógico, não blocos alocados, então o desconto é limitado
+    /// ao restante para a barra continuar somando 100% do disco. Chamar de novo substitui
+    /// o valor anterior.
+    pub fn apply_docker(&mut self, usage: Option<DockerUsage>) {
+        let restante = self.unaccounted_bytes + self.docker_bytes;
+        self.docker_bytes = usage.as_ref().map_or(0, |u| u.total().min(restante));
+        self.unaccounted_bytes = restante - self.docker_bytes;
+        self.docker = usage;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanProgress {
     pub bytes: HashMap<Category, u64>,
     pub files: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(unaccounted: u64) -> ScanResult {
+        ScanResult {
+            disk: DiskInfo {
+                mount: "/".into(),
+                device: String::new(),
+                total_bytes: 0,
+                available_bytes: 0,
+            },
+            categories: HashMap::new(),
+            trash_bytes: 0,
+            docker: None,
+            docker_bytes: 0,
+            unaccounted_bytes: unaccounted,
+            denied_dirs: 0,
+            files: 0,
+            elapsed_ms: 0,
+        }
+    }
+
+    fn docker(total: u64) -> DockerUsage {
+        DockerUsage {
+            images: total,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn docker_moves_out_of_unaccounted() {
+        let mut r = result(100);
+        r.apply_docker(Some(docker(70)));
+        assert_eq!((r.docker_bytes, r.unaccounted_bytes), (70, 30));
+    }
+
+    #[test]
+    fn docker_is_capped_at_unaccounted() {
+        let mut r = result(100);
+        r.apply_docker(Some(docker(150)));
+        assert_eq!((r.docker_bytes, r.unaccounted_bytes), (100, 0));
+    }
+
+    #[test]
+    fn reapplying_replaces_previous_value() {
+        let mut r = result(100);
+        r.apply_docker(Some(docker(70)));
+        r.apply_docker(Some(docker(20)));
+        assert_eq!((r.docker_bytes, r.unaccounted_bytes), (20, 80));
+        r.apply_docker(None);
+        assert_eq!((r.docker_bytes, r.unaccounted_bytes), (0, 100));
+    }
 }

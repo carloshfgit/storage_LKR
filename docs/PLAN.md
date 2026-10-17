@@ -1,6 +1,6 @@
 # PLAN — Etapas de desenvolvimento
 
-Cada etapa termina com algo **executável e verificável**. Detalhes técnicos estão em [ARCHITECTURE.md](ARCHITECTURE.md), e a justificativa da stack em [STACK_CHOICE.md](STACK_CHOICE.md).
+Cada etapa termina com algo **executável e verificável**. Detalhes técnicos estão em [ARCHITECTURE.md](ARCHITECTURE.md), e a justificativa da stack em [STACK_CHOICE.md](STACK_CHOICE.md). O porquê de cada decisão está em [DECISIONS.md](DECISIONS.md).
 
 **Escopo do MVP:**
 - Barra com 7 segmentos: Fotos, Vídeos, Áudio, Documentos, Apps/Sistema, Outros e Livre.
@@ -54,8 +54,8 @@ Total + restante = `df` por construção. O restante (106 GB) é real: são dire
 ---
 
 ## Etapa 2 — Classificação definitiva
-- [ ] Implementar as 6 regras ordenadas e a tabela de extensões de ARCHITECTURE §5.
-- [ ] Testes unitários (pelo menos estes casos):
+- [x] Implementar as 6 regras ordenadas e a tabela de extensões de ARCHITECTURE §5.
+- [x] Testes unitários (pelo menos estes casos):
 
 | Caminho | Esperado |
 |---|---|
@@ -67,14 +67,33 @@ Total + restante = `df` por construção. O restante (106 GB) é real: são dire
 | `~/Downloads/ubuntu.iso` | Outros |
 | `~/Documentos/cv.pdf` | Documentos |
 
-- [ ] `docker.rs` (ARCHITECTURE §6.1): roda `docker system df --format json` em paralelo ao walk, com timeout de 5 s, e devolve `Option<DockerUsage>`.
-- [ ] Descontar o Docker do restante: `docker_bytes = min(Σ docker, restante)`.
-- [ ] Testes do parser de tamanhos (`"58.68GB"`, `"113.1MB"`, `"0B"`, `"39.88GB (68%)"`) e do caso sem Docker (binário ausente ou daemon inacessível vira `None`, sem erro).
-- [ ] O CLI mostra a linha "Docker" separada de "Restante (sem acesso)".
+- [x] `docker.rs` (ARCHITECTURE §6.1): `docker_usage(timeout)` roda `docker system df --format json` com timeout de 20 s e devolve `Option<DockerUsage>`. O `scan()` não espera por ele.
+- [x] Descontar o Docker do restante com `ScanResult::apply_docker`: `docker_bytes = min(Σ docker, restante)`.
+- [x] Testes do parser de tamanhos (`"58.68GB"`, `"113.1MB"`, `"0B"`, `"39.88GB (68%)"`) e do caso sem Docker (binário ausente ou daemon inacessível vira `None`, sem erro).
+- [x] O CLI mostra a linha "Docker" separada de "Restante (sem acesso)".
 
 **Pronto quando:**
 - `cargo test -p scanner` passa, e o CLI mostra uma distribuição plausível na máquina real.
 - Nesta máquina, o CLI mostra cerca de 97 GB de Docker, e o "sem acesso" cai de 106 GB para menos de 15 GB.
+
+**Resultado (17/10/2026):**
+
+| Linha | Antes (Etapa 1) | Agora |
+|---|---|---|
+| Fotos | 1,35 GB | 0,31 GB (os JPG/PNG de caches e de `/usr` saíram) |
+| Apps/Sistema | 0 GB | 130,2 GB = 23,9 escaneado + **97,15 Docker** + 9,15 reservado/sem acesso |
+| Outros | 75,6 GB | 54,0 GB, dos quais 5,77 GB na Lixeira |
+| "Sem acesso" | 106,3 GB | **9,15 GB** |
+
+- 21 testes passam (`cargo test -p scanner`).
+- Walk de `/` sem Docker: 2,0 a 2,5 s, sem perda com as novas regras.
+- `docker system df` sozinho: cerca de 5,2 s. Junto com o walk, os dois disputam o disco (walk de 4 a 5 s, total de cerca de 6,5 s). Na Etapa 3, a consulta ao Docker vai rodar depois do `Done`.
+- **Refinamento (DECISIONS D21–D23):**
+  - Regras de app portátil (AppImage, `~/Applications`, `resources/app` do Electron) e de build/dev (`node_modules`, `target/debug|release`, `__pycache__`, `site-packages`).
+  - `.ts` saiu de Vídeos.
+  - Resultado: Vídeos caiu de 37.285 para 18 arquivos, e o tempo do walk não mudou.
+  - 28 testes passam.
+  - Resta como limitação (D23): mídia de projetos próprios conta como mídia.
 
 ---
 

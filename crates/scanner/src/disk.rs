@@ -27,7 +27,8 @@ fn find_mount(path: &Path) -> Option<(PathBuf, String)> {
             let mut fields = line.split_whitespace();
             let device = fields.next()?;
             let mount = PathBuf::from(unescape_mount(fields.next()?));
-            path.starts_with(&mount).then(|| (mount, device.to_string()))
+            path.starts_with(&mount)
+                .then(|| (mount, device.to_string()))
         })
         .max_by_key(|(mount, _)| mount.as_os_str().len())
 }
