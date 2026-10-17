@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Production & Build outputs
+/build
+/.svelte-kit
+/package
+dist/
+
+# Rust / Cargo
+target/
+src-tauri/target/
+src-tauri/gen/schemas
+
+# Environment & OS
+.DS_Store
+.env
+.env.*
+!.env.example
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*

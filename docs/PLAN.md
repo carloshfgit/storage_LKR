@@ -10,15 +10,15 @@ Cada etapa termina com algo **executável e verificável**. Detalhes técnicos e
 ---
 
 ## Etapa 0 — Ambiente
-- [ ] Instalar Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- [ ] Instalar as dependências do sistema:
+- [x] Instalar Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- [x] Instalar as dependências do sistema:
   ```bash
   sudo apt install build-essential curl wget file libwebkit2gtk-4.1-dev libxdo-dev \
     libssl-dev libayatana-appindicator3-dev librsvg2-dev
   ```
-- [ ] Gerar o projeto: `npm create tauri-app@latest` (Svelte + TypeScript), com saída na raiz do repositório.
-- [ ] Converter para workspace Cargo (`[workspace] members = ["crates/scanner", "src-tauri"]`) e criar o `crates/scanner` vazio.
-- [ ] `git init` + `.gitignore` (`target/`, `node_modules/`, `dist/`).
+- [x] Gerar o projeto: `npm create tauri-app@latest` (Svelte + TypeScript), com saída na raiz do repositório.
+- [x] Converter para workspace Cargo (`[workspace] members = ["crates/scanner", "src-tauri"]`) e criar o `crates/scanner` vazio.
+- [x] `git init` + `.gitignore` (`target/`, `node_modules/`, `dist/`).
 
 **Pronto quando:** `npm run tauri dev` abre a janela padrão.
 
