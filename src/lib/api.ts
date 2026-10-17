@@ -49,6 +49,7 @@ export interface ScanResult {
   disk: DiskInfo;
   categories: Record<Category, CategoryStats>;
   trash_bytes: number;
+  trash_files: number;
   docker: DockerUsage | null;
   docker_bytes: number;
   unaccounted_bytes: number;
@@ -80,11 +81,47 @@ export function cancelScan(): Promise<void> {
   return invoke("cancel_scan");
 }
 
-export function categoryFiles(category: Category): Promise<FileEntry[]> {
+/** Arquivo do detalhe, com o veredito da mesma validação do `moveToTrash`. */
+export interface FileItem extends FileEntry {
+  trashable: boolean;
+}
+
+export function categoryFiles(category: Category): Promise<FileItem[]> {
   return invoke("category_files", { category });
 }
 
 /** Abre o gerenciador de arquivos com o arquivo selecionado. Só vale para arquivos do último scan. */
 export function reveal(path: string): Promise<void> {
   return invoke("reveal", { path });
+}
+
+export interface TrashReport {
+  moved: number;
+  moved_bytes: number;
+  rejected: { path: string; reason: string }[];
+  /** Último resultado já atualizado no Rust. */
+  result: ScanResult;
+}
+
+export interface Cleanup {
+  /** Diferença do espaço livre antes e depois, como o `df` mostra. */
+  freed_bytes: number;
+  result: ScanResult;
+}
+
+export type DockerTarget = "build_cache" | "unused_images";
+
+/** Valida cada caminho no Rust; os recusados voltam em `rejected` com o motivo. */
+export function moveToTrash(paths: string[]): Promise<TrashReport> {
+  return invoke("move_to_trash", { paths });
+}
+
+/** Apaga permanentemente a Lixeira. Chamar só depois da confirmação do usuário. */
+export function emptyTrash(): Promise<Cleanup> {
+  return invoke("empty_trash", { confirm: true });
+}
+
+/** `build_cache` → `docker builder prune -f`; `unused_images` → `docker image prune -a -f`. */
+export function dockerPrune(target: DockerTarget): Promise<Cleanup> {
+  return invoke("docker_prune", { target, confirm: true });
 }

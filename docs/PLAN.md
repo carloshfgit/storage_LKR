@@ -158,11 +158,11 @@ Total + restante = `df` por construção. O restante (106 GB) é real: são dire
 ---
 
 ## Etapa 6 — Ações de limpeza
-- [ ] `move_to_trash` com validação no Rust (canônico, sob `$HOME`, fora de apps, presente no último scan), usando o crate `trash`.
-- [ ] Seleção múltipla, rodapé com o total e atualização da barra: bytes saem da categoria e entram em "Lixeira".
-- [ ] `empty_trash` com diálogo de confirmação ("Apagar permanentemente X GB?"), seguido de nova leitura de `disk_info`.
+- [x] `move_to_trash` com validação no Rust (canônico, sob `$HOME`, fora de apps, presente no último scan), usando o crate `trash`.
+- [x] Seleção múltipla, rodapé com o total e atualização da barra: bytes saem da categoria e entram em "Lixeira".
+- [x] `empty_trash` com diálogo de confirmação ("Apagar permanentemente X GB?"), seguido de nova leitura de `disk_info`.
 - [ ] Teste manual: tentar mandar para a lixeira um caminho fora de `$HOME` via DevTools precisa ser rejeitado.
-- [ ] `docker_prune` no card Docker, com diálogo de confirmação mostrando o tamanho:
+- [x] `docker_prune` no card Docker, com diálogo de confirmação mostrando o tamanho:
   - "Limpar build cache" → `docker builder prune -f`
   - "Remover imagens não usadas" → `docker image prune -a -f` (avisar que vão precisar ser baixadas de novo)
   - Volumes: só exibidos, **sem botão**, porque guardam dados.
@@ -171,6 +171,19 @@ Total + restante = `df` por construção. O restante (106 GB) é real: são dire
 - O arquivo aparece na Lixeira do Ubuntu e pode ser restaurado pelo Nautilus.
 - Esvaziar a Lixeira aumenta o "Livre" na mesma quantidade vista no `df`.
 - Limpar o build cache do Docker aumenta o "Livre" no valor que o `df` confirma, e o card Docker é atualizado.
+
+**Resultado (17/10/2026):**
+- As ações ficam em `state/cleanup.rs` e recebem a Lixeira, o `docker` e o `statvfs` como parâmetros. 8 testes com pasta temporária e fakes cobrem:
+  - mover um arquivo válido e recusar, cada um com o motivo, os de fora do `$HOME`, os de app (`~/snap`), os que já estão na Lixeira e os inventados;
+  - arquivo apagado depois do scan, pasta trocada por link simbólico e falha da própria Lixeira;
+  - o `trashable` da lista, a recusa durante um scan, a confirmação obrigatória, o liberado medido pelo disco e a atualização do card Docker.
+- Validação mais estrita que a planejada: o caminho canonicalizado precisa ser igual ao do scan (DECISIONS D33). Cada ação devolve o resultado atualizado (D34).
+- Workspace: 46 testes passam, clippy limpo, `npm run check` sem erros.
+- ⏳ **Falta a conferência manual**, que precisa ser feita por você:
+  1. Mover um arquivo de teste para a Lixeira e restaurá-lo pelo Nautilus.
+  2. No DevTools: `await window.__TAURI_INTERNALS__.invoke("move_to_trash", { paths: ["/etc/hostname"] })` deve voltar com `moved: 0` e o motivo em `rejected`.
+  3. Esvaziar a Lixeira e comparar o liberado com o `df -B1 /` antes e depois.
+  4. Limpar o build cache do Docker e conferir o mesmo.
 
 ---
 

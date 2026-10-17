@@ -79,6 +79,42 @@ pub fn docker_usage(timeout: Duration) -> Option<DockerUsage> {
     parse_df(&out)
 }
 
+/// O que o app sabe limpar no Docker. Volumes ficam de fora de propósito: guardam dados
+/// (DECISIONS D18).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerTarget {
+    BuildCache,
+    UnusedImages,
+}
+
+impl DockerTarget {
+    /// Argumentos fixos do `docker`: nada vindo da UI entra na linha de comando.
+    pub fn args(self) -> &'static [&'static str] {
+        match self {
+            DockerTarget::BuildCache => &["builder", "prune", "-f"],
+            DockerTarget::UnusedImages => &["image", "prune", "-a", "-f"],
+        }
+    }
+}
+
+/// Roda a limpeza e espera terminar, sem timeout: um prune grande leva minutos.
+pub fn docker_prune(target: DockerTarget) -> Result<(), String> {
+    let out = Command::new("docker")
+        .args(target.args())
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("não foi possível rodar o docker: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    Err(match stderr.trim() {
+        "" => format!("docker terminou com {}", out.status),
+        msg => msg.to_string(),
+    })
+}
+
 #[derive(Deserialize)]
 struct DfLine {
     #[serde(rename = "Type")]
@@ -174,6 +210,16 @@ mod tests {
             18_180_000_000 + 113_100_000 + 16_710_000_000 + 39_880_000_000
         );
         assert_eq!(u.total(), 97_153_100_000);
+    }
+
+    #[test]
+    fn prune_never_touches_volumes() {
+        for target in [DockerTarget::BuildCache, DockerTarget::UnusedImages] {
+            let args = target.args();
+            assert!(args.ends_with(&["-f"]));
+            assert!(!args.iter().any(|a| a.contains("volume")), "{args:?}");
+            assert!(!args.contains(&"--volumes"));
+        }
     }
 
     #[test]

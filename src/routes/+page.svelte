@@ -140,7 +140,17 @@
 
 <main>
   {#if detail && result}
-    <CategoryDetail segment={detail} {result} {dockerPending} {total} onback={() => (selected = null)} />
+    <CategoryDetail
+      segment={detail}
+      {result}
+      {dockerPending}
+      {total}
+      onback={() => (selected = null)}
+      onupdate={(r) => {
+        result = r;
+        disk = r.disk;
+      }}
+    />
   {/if}
 
   <!-- Escondida, não desmontada: a barra volta do detalhe sem refazer a animação. -->

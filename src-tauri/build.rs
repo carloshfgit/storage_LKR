@@ -6,6 +6,9 @@ const COMMANDS: &[&str] = &[
     "cancel_scan",
     "category_files",
     "reveal",
+    "move_to_trash",
+    "empty_trash",
+    "docker_prune",
 ];
 
 fn main() {

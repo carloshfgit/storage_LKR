@@ -146,6 +146,7 @@ pub fn scan(
 
         if c.in_trash {
             agg.trash_bytes += c.bytes;
+            agg.trash_files += u64::from(!is_dir);
         }
         if is_dir {
             agg.add_bytes(c.category, c.bytes);
@@ -162,6 +163,7 @@ pub fn scan(
     on_progress(&agg.progress());
     let files = agg.files;
     let trash_bytes = agg.trash_bytes;
+    let trash_files = agg.trash_files;
     let categories = agg.finish();
     let scanned: u64 = categories.values().map(|c| c.bytes).sum();
 
@@ -170,6 +172,8 @@ pub fn scan(
         disk,
         categories,
         trash_bytes,
+        trash_files,
+        home: opts.home.clone(),
         docker: None,
         docker_bytes: 0,
         denied_dirs,
@@ -192,6 +196,7 @@ struct Aggregator {
     files_per_cat: [u64; Category::COUNT],
     files: u64,
     trash_bytes: u64,
+    trash_files: u64,
     /// Min-heap: o topo é o menor dos N maiores, descartado quando aparece um maior.
     top: [BinaryHeap<Reverse<TopItem>>; Category::COUNT],
 }
@@ -204,6 +209,7 @@ impl Aggregator {
             files_per_cat: [0; Category::COUNT],
             files: 0,
             trash_bytes: 0,
+            trash_files: 0,
             top: Default::default(),
         }
     }
@@ -376,6 +382,8 @@ mod tests {
         assert!(files(Category::AppsSystem).contains(&dir.join("usr/icone.png")));
         // A Lixeira conta o vídeo e os diretórios Trash/ e files/.
         assert!(r.trash_bytes >= 40_000 && r.trash_bytes <= r.categories[&Category::Other].bytes);
+        assert!(r.trash_files >= 1 && r.trash_files <= r.categories[&Category::Other].files);
+        assert_eq!(r.home, home);
 
         fs::remove_dir_all(&dir).unwrap();
     }

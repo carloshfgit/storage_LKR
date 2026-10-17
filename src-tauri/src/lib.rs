@@ -16,6 +16,9 @@ pub fn run() {
             commands::cancel_scan,
             commands::category_files,
             commands::reveal,
+            commands::move_to_trash,
+            commands::empty_trash,
+            commands::docker_prune,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

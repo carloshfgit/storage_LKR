@@ -1,13 +1,24 @@
 <!-- Um arquivo na lista do detalhe: nome, pasta (com ~ no lugar do $HOME), tamanho e data. -->
 <script lang="ts">
-  import type { FileEntry } from "./api";
+  import type { FileItem } from "./api";
   import { formatBytes, formatRelativeDate } from "./format";
 
   let {
     file,
     home,
+    selected,
+    disabled,
+    ontoggle,
     onreveal,
-  }: { file: FileEntry; home: string; onreveal: (path: string) => void } = $props();
+  }: {
+    file: FileItem;
+    home: string;
+    selected: boolean;
+    /** Uma ação está em andamento: nada pode ser marcado. */
+    disabled: boolean;
+    ontoggle: () => void;
+    onreveal: (path: string) => void;
+  } = $props();
 
   const slash = $derived(file.path.lastIndexOf("/"));
   const name = $derived(file.path.slice(slash + 1));
@@ -22,6 +33,16 @@
 </script>
 
 <li>
+  <input
+    type="checkbox"
+    checked={selected}
+    disabled={disabled || !file.trashable || lossy}
+    onchange={ontoggle}
+    title={file.trashable && !lossy
+      ? "Selecionar"
+      : "Não pode ir para a Lixeira: fora da pasta pessoal, de um app instalado, já na Lixeira ou com nome inválido"}
+    aria-label="Selecionar {name}"
+  />
   <div class="text">
     <span class="name" title={name}>{name}</span>
     <span class="folder" title={folder}>{folder}</span>
@@ -45,7 +66,7 @@
 <style>
   li {
     display: grid;
-    grid-template-columns: 1fr auto 32px;
+    grid-template-columns: 18px 1fr auto 32px;
     align-items: center;
     gap: 12px;
     padding: 8px 0;
@@ -54,6 +75,19 @@
 
   li:first-child {
     border-top: none;
+  }
+
+  input {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  input:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
   }
 
   .text,

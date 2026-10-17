@@ -9,6 +9,9 @@
     "allow-start-scan",
     "allow-cancel-scan",
     "allow-category-files",
-    "allow-reveal"
+    "allow-reveal",
+    "allow-move-to-trash",
+    "allow-empty-trash",
+    "allow-docker-prune"
   ]
 }

@@ -10,7 +10,7 @@ Gerenciador de armazenamento para Ubuntu no estilo iOS/Android: uma barra horizo
 - **Preciso:** mede o espaço alocado em disco, como `df` e `du`. A barra sempre soma 100% do disco.
 - **Classificação inteligente:** o caminho decide antes da extensão. Um ícone em `/usr` é Sistema, um JPG do cache do navegador é Outros e um AppImage é App.
 - **Docker visível:** o espaço de `/var/lib/docker`, que só o root lê, é obtido do próprio Docker (`docker system df`) e aparece como subitem de Apps/Sistema.
-- **Seguro (planejado):** nada é apagado direto. Os arquivos vão para a Lixeira do Ubuntu, e toda a validação acontece no Rust.
+- **Seguro:** nada é apagado direto. Os arquivos vão para a Lixeira do Ubuntu, e toda a validação acontece no Rust.
 
 ## Stack
 
@@ -36,7 +36,7 @@ O passo a passo completo, com pré-requisitos, a CLI de benchmark, o build do `.
 | 3. Ponte Tauri | ✅ | Eventos `progress`/`done`/`docker` pelo Channel |
 | 4. Tela principal | ✅ | Barra ao vivo, legenda e tema claro/escuro (falta a conferência visual) |
 | 5. Detalhe da categoria | ✅ | Maiores arquivos, "Abrir na pasta" e cards Docker/Lixeira (falta a conferência visual) |
-| 6. Ações de limpeza | | |
+| 6. Ações de limpeza | ✅ | Lixeira, esvaziar e prune do Docker, validados no Rust (falta a conferência manual) |
 | 7. Polimento e pacote `.deb` | | |
 
 ## Documentação

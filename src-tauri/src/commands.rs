@@ -4,11 +4,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use scanner::{Category, DEFAULT_DOCKER_TIMEOUT, DiskInfo, FileEntry, ScanOptions, docker_usage};
+use scanner::{
+    Category, DEFAULT_DOCKER_TIMEOUT, DiskInfo, DockerTarget, ScanOptions, docker_usage,
+};
 use tauri::State;
 use tauri::ipc::Channel;
 
-use crate::state::{AppState, ScanEvent};
+use crate::state::{AppState, Cleanup, FileItem, ScanEvent, TrashReport};
 
 /// O app sempre mostra o disco do sistema.
 const SCAN_ROOT: &str = "/";
@@ -40,20 +42,14 @@ pub fn cancel_scan(state: State<'_, Arc<AppState>>) {
     state.cancel_scan();
 }
 
-/// Maiores arquivos da categoria no último scan.
-#[tauri::command]
+/// Maiores arquivos da categoria no último scan, cada um dizendo se pode ir para a Lixeira.
+/// `async`: a checagem faz um `canonicalize` por arquivo.
+#[tauri::command(async)]
 pub fn category_files(
     state: State<'_, Arc<AppState>>,
     category: Category,
-) -> Result<Vec<FileEntry>, String> {
-    let result = state
-        .last_result()
-        .ok_or("nenhuma varredura concluída ainda")?;
-    Ok(result
-        .categories
-        .get(&category)
-        .map(|c| c.top.clone())
-        .unwrap_or_default())
+) -> Result<Vec<FileItem>, String> {
+    state.category_files(category).map_err(|e| e.to_string())
 }
 
 /// Abre o gerenciador de arquivos com `path` selecionado. Só aceita arquivos do último
@@ -65,4 +61,46 @@ pub fn reveal(state: State<'_, Arc<AppState>>, path: PathBuf) -> Result<(), Stri
         return Err("arquivo fora do último scan".into());
     }
     tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| e.to_string())
+}
+
+/// Move para a Lixeira do usuário (padrão freedesktop, restaurável pelo Nautilus).
+#[tauri::command(async)]
+pub fn move_to_trash(
+    state: State<'_, Arc<AppState>>,
+    paths: Vec<PathBuf>,
+) -> Result<TrashReport, String> {
+    state
+        .move_to_trash(&paths, |p| trash::delete(p).map_err(|e| e.to_string()))
+        .map_err(|e| e.to_string())
+}
+
+/// Apaga permanentemente tudo o que está na Lixeira. Exige `confirm == true`.
+#[tauri::command(async)]
+pub fn empty_trash(state: State<'_, Arc<AppState>>, confirm: bool) -> Result<Cleanup, String> {
+    state
+        .empty_trash(confirm, purge_trash, root_disk)
+        .map_err(|e| e.to_string())
+}
+
+/// Roda um dos prunes fixos do Docker. Exige `confirm == true`.
+#[tauri::command(async)]
+pub fn docker_prune(
+    state: State<'_, Arc<AppState>>,
+    target: DockerTarget,
+    confirm: bool,
+) -> Result<Cleanup, String> {
+    state
+        .docker_prune(target, confirm, scanner::docker_prune, root_disk, || {
+            docker_usage(DEFAULT_DOCKER_TIMEOUT)
+        })
+        .map_err(|e| e.to_string())
+}
+
+fn root_disk() -> std::io::Result<DiskInfo> {
+    scanner::disk_info(Path::new(SCAN_ROOT))
+}
+
+fn purge_trash() -> Result<(), String> {
+    let items = trash::os_limited::list().map_err(|e| e.to_string())?;
+    trash::os_limited::purge_all(items).map_err(|e| e.to_string())
 }

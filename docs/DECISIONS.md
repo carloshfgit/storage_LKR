@@ -24,9 +24,9 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D14](#d14) | Lixeira contada à parte | ✅ | 2 |
 | [D15](#d15) | Docker via `docker system df` | ✅ | 2 |
 | [D16](#d16) | Docker não bloqueia o scan | ✅ | 2–3 |
-| [D17](#d17) | Limpeza: Lixeira sim, `rm` nunca | 📋 | 6 |
-| [D18](#d18) | Limpeza do Docker sem volumes | 📋 | 6 |
-| [D19](#d19) | Validação de segurança no Rust, não na UI | ✅ permissões · 📋 ações | 3–6 |
+| [D17](#d17) | Limpeza: Lixeira sim, `rm` nunca | ✅ | 6 |
+| [D18](#d18) | Limpeza do Docker sem volumes | ✅ | 6 |
+| [D19](#d19) | Validação de segurança no Rust, não na UI | ✅ | 3–6 |
 | [D20](#d20) | Unidades decimais (GB = 10⁹) | ✅ | 1–4 |
 | [D21](#d21) | Regras de apps portáteis e de build/dev | ✅ | 2 |
 | [D22](#d22) | `.ts` não é vídeo | ✅ | 2 |
@@ -40,6 +40,8 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D30](#d30) | Reescanear zera a barra; cancelar volta ao resultado anterior | ✅ | 4 |
 | [D31](#d31) | "Abrir na pasta" como command próprio, validado no Rust | ✅ | 5 |
 | [D32](#d32) | Docker com tamanho e liberável por tipo | ✅ | 5 |
+| [D33](#d33) | Validação do `move_to_trash`: caminho inalterado e veredito na lista | ✅ | 6 |
+| [D34](#d34) | Ações devolvem o resultado atualizado; liberado medido pelo `statvfs` | ✅ | 6 |
 
 ---
 
@@ -376,4 +378,27 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 **Decisão:** `DockerUsage` passou de 4 tamanhos e um liberável total para 4 `DockerItem { size, reclaimable, count }`, um por linha do `docker system df`.
 
 **Por quê:** o card do Docker mostra cada tipo com o quanto dá para liberar. As ações da Etapa 6 são por tipo (build cache, imagens), e volumes, mesmo liberáveis para o Docker, nunca são removidos pelo app (D18). Um total único misturaria essas coisas.
+
+---
+
+## Ações de limpeza
+
+### D33 — Validação do `move_to_trash` <a id="d33"></a>
+**Decisão:** além do que D19 pede (consta no último scan, sob o `$HOME`, fora de `is_app_path`), o caminho canonicalizado precisa ser **igual** ao recebido, e arquivos que já estão na Lixeira são recusados. A mesma função (`check_trashable`) marca cada arquivo da lista com `trashable`, e a UI só mostra o checkbox nesses.
+
+**Por quê:**
+- Entre o scan e o clique, uma pasta pode virar link simbólico para fora do `$HOME`. Exigir o caminho inalterado fecha essa brecha sem precisar raciocinar sobre o destino do link. Como o walk não segue links, os caminhos do scan já são canônicos.
+- Mandar para a Lixeira algo que já está nela criaria uma cópia dentro de `Trash/files`.
+- Uma regra só para a lista e para a ação: a UI nunca oferece algo que o Rust vai recusar. A recusa continua acontecendo no Rust, para quem chamar o command direto pelo DevTools.
+
+**Detalhes:** cada caminho é validado e movido sozinho. Um recusado não impede os outros, e o `TrashReport` traz o motivo de cada recusa.
+
+### D34 — Ações devolvem o resultado atualizado <a id="d34"></a>
+**Decisão:** `move_to_trash`, `empty_trash` e `docker_prune` atualizam o `ScanResult` no Rust e o devolvem inteiro. A UI troca o dela por ele, e a barra anima até os valores novos. O "liberado" de `empty_trash` e `docker_prune` é a diferença do `f_bavail` antes e depois.
+
+**Por quê:**
+- O Rust já guarda o resultado para validar as ações. Repetir a contabilidade em TypeScript abriria espaço para as duas versões divergirem.
+- O `statvfs` é o que o `df` e o GNOME mostram. O tamanho que o Docker relata é lógico (D15), e o que a Lixeira guarda pode ter hardlinks, então somar tamanhos daria outro número.
+
+**Descartado:** reescanear depois de cada ação. Seria exato, mas levaria ~2 s e zeraria a barra (D30) a cada clique.
 

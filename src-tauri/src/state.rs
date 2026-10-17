@@ -2,12 +2,16 @@
 //! (os commands só repassam eventos para o `Channel`), o que permite testar tudo
 //! com `cargo test`.
 
+mod cleanup;
+
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use scanner::{DockerUsage, ScanError, ScanOptions, ScanProgress, ScanResult, scan};
 use serde::Serialize;
+
+pub use cleanup::{Cleanup, FileItem, TrashReport};
 
 /// Mensagens enviadas ao frontend durante uma varredura, nesta ordem:
 /// `progress`* → (`done` → `docker`) | `cancelled` | `error`.
@@ -102,6 +106,7 @@ impl AppState {
         self.cancel.store(true, Ordering::SeqCst);
     }
 
+    #[cfg(test)]
     pub fn last_result(&self) -> Option<ScanResult> {
         self.lock_last().clone()
     }

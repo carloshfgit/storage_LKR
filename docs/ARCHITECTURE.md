@@ -51,7 +51,8 @@ storage_LKR/
 │   └── src/
 │       ├── main.rs  lib.rs    # lib.rs: registra AppState e os commands
 │       ├── commands.rs        # commands finos, só repassam ao AppState
-│       └── state.rs           # AppState + ScanEvent: ciclo do scan, testável sem Tauri
+│       ├── state.rs           # AppState + ScanEvent: ciclo do scan, testável sem Tauri
+│       └── state/cleanup.rs   # ações de limpeza e a validação delas (Etapa 6)
 └── src/                       # SvelteKit em modo SPA (adapter-static, ssr = false)
     ├── app.html
     ├── routes/+layout.ts  routes/+page.svelte   # tela única; orquestra o estado
@@ -87,6 +88,8 @@ pub struct ScanResult {
     disk: DiskInfo,                       // total, available, mount, device
     categories: HashMap<Category, CategoryStats>,
     trash_bytes: u64,                     // subitem de Other
+    trash_files: u64,                     // arquivos dentro da Lixeira, já contados em Other
+    home: PathBuf,                        // $HOME da classificação; não serializado
     docker: Option<DockerUsage>,          // preenchido depois, por apply_docker (§6.1)
     docker_bytes: u64,                    // parte do restante atribuída ao Docker
     unaccounted_bytes: u64,               // "Reservado / sem acesso" → somado em AppsSystem
@@ -94,6 +97,11 @@ pub struct ScanResult {
     elapsed_ms: u64,
 }
 ```
+
+Métodos usados pelas ações de limpeza (§7), todos mantendo a barra em 100%:
+- `record_trashed(path)`: tira o arquivo do top-N e da categoria e soma em `Other`, `trash_bytes` e `trash_files`.
+- `clear_trash()`: tira de `Other` o que estava na Lixeira, inclusive os itens dela no top-N.
+- `set_disk(disk)`: troca o `DiskInfo` depois de uma limpeza, recalcula o restante e reaplica o limite do Docker.
 
 ---
 
@@ -206,13 +214,13 @@ pub struct DockerUsage { images: DockerItem, containers: DockerItem, volumes: Do
 | `disk_info` | `() -> DiskInfo` | Instantâneo: a UI desenha "Livre" antes mesmo do scan |
 | `start_scan` | `(on_event: Channel<ScanEvent>) -> ()` | `std::thread::spawn`. Recusa se já houver um scan rodando. Depois do `Done`, consulta o Docker e emite `Docker` |
 | `cancel_scan` | `() -> ()` | Seta o `AtomicBool` |
-| `category_files` | `(cat: Category) -> Vec<FileEntry>` | Top-N do último resultado |
-| `move_to_trash` | `(paths: Vec<PathBuf>) -> TrashReport` | Validação abaixo |
-| `empty_trash` | `(confirm: bool) -> u64` | Exige `confirm == true` e devolve os bytes liberados |
+| `category_files` | `(cat: Category) -> Vec<FileItem>` | Top-N do último resultado. `FileItem` é o `FileEntry` com `trashable`, calculado pela mesma validação do `move_to_trash` |
+| `move_to_trash` | `(paths: Vec<PathBuf>) -> TrashReport` | Validação abaixo. Usa `trash::delete` (padrão freedesktop, restaurável pelo Nautilus). `TrashReport` = movidos, bytes, recusados com o motivo e o `ScanResult` atualizado |
+| `empty_trash` | `(confirm: bool) -> Cleanup` | Exige `confirm == true`. `trash::os_limited::list` + `purge_all` (todas as lixeiras do usuário, como o Nautilus). `Cleanup` = bytes liberados (diferença do `statvfs`) e o `ScanResult` atualizado |
 | `reveal` | `(path: PathBuf) -> ()` | Só arquivos do último scan (`AppState::contains_file`), depois `tauri_plugin_opener::reveal_item_in_dir` (D-Bus `FileManager1.ShowItems` → Nautilus com o arquivo selecionado). `async`, porque a chamada D-Bus bloqueia |
-| `docker_prune` | `(target: DockerTarget, confirm: bool) -> u64` | `DockerTarget` = `BuildCache` \| `UnusedImages`. Devolve os bytes liberados (releitura de `statvfs`) |
+| `docker_prune` | `(target: DockerTarget, confirm: bool) -> Cleanup` | `DockerTarget` = `BuildCache` \| `UnusedImages`. Roda o comando fixo sem timeout (um prune grande leva minutos), relê o `docker system df` e devolve como o `empty_trash` |
 
-Status: `disk_info`, `start_scan`, `cancel_scan` e `category_files` estão ✅ implementados (Etapa 3), e `reveal` (Etapa 5). Os demais entram na Etapa 6.
+Status: todos ✅. `disk_info`, `start_scan`, `cancel_scan` e `category_files` na Etapa 3, `reveal` na 5 e as ações de limpeza na 6. Os commands que tocam no disco são `async`, para não travar a janela.
 
 ```rust
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -238,14 +246,25 @@ AppState { last: Mutex<Option<ScanResult>>, cancel: Arc<AtomicBool>, running: At
 - `running` volta a `false` logo no `Done`. Um novo scan pode começar enquanto o Docker do anterior ainda responde. `generation` garante que esse resultado antigo seja descartado em vez de sobrescrever o novo.
 - `cancel` é zerado **antes** do command retornar, então um `cancel_scan` imediatamente depois já vale.
 
-Depois de `move_to_trash`, cada item sai do top-N e do total da sua categoria e seus bytes vão para `Other`/`trash_bytes`. **Mover para a Lixeira não libera espaço**; só `empty_trash` libera, e aí `livre` é recalculado pelo `statvfs`.
+**Ações de limpeza (`state/cleanup.rs`):** são métodos do `AppState` que recebem as operações de sistema (Lixeira, `docker`, `statvfs`) como parâmetros, como o `start_scan`. Os testes usam uma pasta temporária e fakes, sem tocar na Lixeira nem no Docker de verdade.
+- Todas são recusadas durante um scan (`running`): o resultado sobre o qual agiriam vai ser substituído.
+- Depois de `move_to_trash`, cada item sai do top-N e do total da sua categoria e seus bytes vão para `Other`/`trash_bytes`. **Mover para a Lixeira não libera espaço.**
+- `empty_trash` e `docker_prune` leem o `statvfs` antes e depois. A diferença é o "liberado" mostrado na UI, e o disco novo entra no resultado por `set_disk`. O lock do resultado não fica preso durante a limpeza.
+- Cada ação devolve o `ScanResult` atualizado, e a UI troca o dela por ele (DECISIONS D34).
 
 **Segurança (validação no Rust, não na UI):**
-- `move_to_trash`: o caminho é canonicalizado (`fs::canonicalize`) e precisa estar sob `$HOME`, **não** casar a regra 1 (`is_app_path`: sistema e apps gerenciados; apps portáteis podem ir para a Lixeira) e constar no último `ScanResult`. Caminhos que falham são rejeitados e listados no `TrashReport`.
+- `move_to_trash` (`check_trashable`), em ordem:
+  1. o caminho consta no último `ScanResult`;
+  2. `fs::canonicalize` funciona (o arquivo ainda existe) e devolve o próprio caminho, ou seja, nenhum componente virou link simbólico depois do scan;
+  3. fica sob o `$HOME` canonicalizado;
+  4. **não** casa a regra 1 (`is_app_path`: sistema e apps gerenciados; apps portáteis podem ir para a Lixeira);
+  5. ainda não está na Lixeira.
+
+  Caminhos que falham são recusados com o motivo e listados no `TrashReport`; os outros seguem (DECISIONS D33).
 - Nunca há `remove_file` direto. O único apagamento permanente é `empty_trash`, que exige confirmação explícita.
 - `docker_prune` só executa comandos fixos, sem argumento vindo da UI: `docker builder prune -f` e `docker image prune -a -f`. **Volumes nunca são apagados pelo app**, porque guardam dados (bancos, uploads); eles só aparecem com o tamanho e a dica `docker volume ls`.
 - **Permissões:** o `build.rs` declara os commands no `AppManifest`. Com isso, o Tauri passa a exigir a permissão `allow-<command>` de cada um, em vez de liberar todos os commands registrados. `capabilities/default.json` lista só `core:default` e essas permissões. O `opener:default` do template foi removido e nenhuma permissão do opener é dada à janela: o `reveal` é um command próprio, que valida o caminho antes de chamar o plugin pelo Rust (DECISIONS D25, D31).
-- **Caminhos não UTF-8** (válidos no Linux) são serializados com perdas (`�`) para não derrubar o resultado inteiro (DECISIONS D26). Na Etapa 6, as ações sobre esses arquivos precisam ser recusadas, já que o caminho recebido de volta não é o real.
+- **Caminhos não UTF-8** (válidos no Linux) são serializados com perdas (`�`) para não derrubar o resultado inteiro (DECISIONS D26). As ações sobre esses arquivos são recusadas, já que o caminho recebido de volta não é o real: ele não consta no último scan. A UI também desabilita o checkbox deles.
 
 ---
 
@@ -256,7 +275,8 @@ Depois de `move_to_trash`, cada item sai do top-N e do total da sua categoria e 
 | `routes/+page.svelte` | Orquestra o estado (`idle` / `scanning` / `done` / `cancelled` / `error`), monta os segmentos e alterna entre a tela principal e o detalhe. A tela principal fica escondida, não desmontada, para a barra não refazer a animação na volta. Escaneia ao abrir |
 | `StorageBar.svelte` | Barra única, em ordem fixa: as 6 categorias, a faixa "ainda não contado" e "Livre" na ponta direita. Cada largura é um `Tween` (600 ms, `cubicOut`) redirecionado a cada `progress`. Vãos de 2px com a cor do card separam os segmentos. Clicar num segmento abre o detalhe |
 | `Legend.svelte` | Linhas com bolinha de cor, nome, tamanho e porcentagem do disco, ordenadas por bytes (`animate:flip`) e com "Livre" por último. Apps/Sistema traz a composição: Docker e reservado/sem acesso |
-| `CategoryDetail.svelte` | Aberto ao clicar num segmento da barra ou numa linha da legenda (só com um resultado completo). Mostra o total, a porcentagem e a contagem, e lista o top-N de `category_files`, ordenado por tamanho ou por data. Em Outros aparece o card "Lixeira"; em Apps/Sistema, os cards "Docker" (imagens, containers, volumes e build cache, cada um com tamanho, quantidade e liberável; some sem Docker) e "Reservado / sem acesso". Voltar: botão ou `Esc`. Na Etapa 6 ganha checkbox, "Mover para Lixeira", o rodapé com o total selecionado e as ações dos cards |
+| `CategoryDetail.svelte` | Aberto ao clicar num segmento da barra ou numa linha da legenda (só com um resultado completo). Mostra o total, a porcentagem e a contagem, e lista o top-N de `category_files`, ordenado por tamanho ou por data. Em Outros aparece o card "Lixeira"; em Apps/Sistema, os cards "Docker" (imagens, containers, volumes e build cache, cada um com tamanho, quantidade e liberável; some sem Docker) e "Reservado / sem acesso". Voltar: botão ou `Esc`. Checkbox nos arquivos com `trashable`, barra fixa no rodapé com o total selecionado e "Mover para a Lixeira". Card Lixeira com "Esvaziar Lixeira"; card Docker com "Limpar build cache" e "Remover imagens não usadas", sem botão para volumes. As ações destrutivas passam pelo `ConfirmDialog`, com o tamanho no título. O resultado aparece num aviso: o que foi movido ou liberado, e os recusados com o motivo |
+| `ConfirmDialog.svelte` | `<dialog>` modal. Esc cancela |
 | `FileRow.svelte` | Nome, pasta abreviada (`~/…`, via `homeDir()`), tamanho, data relativa e o botão "Abrir na pasta". Desabilitado para nomes não UTF-8, que chegam com `�` (D26) |
 | `api.ts` | `startScan(onEvent)` com `new Channel<ScanEvent>()` e wrappers tipados |
 | `categories.ts` | Nome (espelha `Category::label`) e token de cor de cada categoria, mais o tipo `Segment` usado pela barra e pela legenda |

@@ -1,8 +1,22 @@
 <!-- Detalhe de uma categoria: total, cards especiais e os maiores arquivos do último scan. -->
 <script lang="ts">
   import { homeDir } from "@tauri-apps/api/path";
-  import { categoryFiles, reveal, type DockerItem, type FileEntry, type ScanResult } from "./api";
+  import { untrack } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
+  import {
+    categoryFiles,
+    dockerPrune,
+    emptyTrash,
+    moveToTrash,
+    reveal,
+    type Cleanup,
+    type DockerItem,
+    type DockerTarget,
+    type FileItem,
+    type ScanResult,
+  } from "./api";
   import type { Segment } from "./categories";
+  import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog.svelte";
   import { formatBytes, formatCount, formatPercent } from "./format";
   import FileRow from "./FileRow.svelte";
 
@@ -12,18 +26,27 @@
     dockerPending,
     total,
     onback,
+    onupdate,
   }: {
     segment: Segment;
     result: ScanResult;
     dockerPending: boolean;
     total: number;
     onback: () => void;
+    /** Recebe o resultado atualizado pelo Rust depois de cada ação. */
+    onupdate: (result: ScanResult) => void;
   } = $props();
 
-  let files = $state.raw<FileEntry[] | null>(null);
+  let files = $state.raw<FileItem[] | null>(null);
   let loadError = $state("");
-  let revealError = $state("");
   let home = $state("");
+  /** Incrementado depois de uma ação para recarregar a lista. */
+  let reload = $state(0);
+  const selection = new SvelteSet<string>();
+  /** Ação em andamento; enquanto houver uma, as outras ficam travadas. */
+  let busy = $state<"trash" | "empty" | DockerTarget | null>(null);
+  let notice = $state<{ kind: "ok" | "error"; text: string; details?: string[] } | null>(null);
+  let confirm = $state<(ConfirmRequest & { run: () => void }) | null>(null);
   let sortBy = $state<"size" | "date">("size");
 
   const sorted = $derived(
@@ -37,6 +60,8 @@
 
   $effect(() => {
     const requested = key;
+    reload;
+    untrack(() => selection.clear());
     files = null;
     loadError = "";
     categoryFiles(requested).then(
@@ -50,13 +75,101 @@
     () => {},
   );
 
+  const selectedBytes = $derived(
+    (files ?? []).reduce((sum, f) => sum + (selection.has(f.path) ? f.bytes : 0), 0),
+  );
+
+  const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+  const plural = (n: number, one: string, many: string) => `${formatCount(n)} ${n === 1 ? one : many}`;
+
+  function toggle(path: string) {
+    if (!selection.delete(path)) selection.add(path);
+  }
+
   async function onreveal(path: string) {
-    revealError = "";
     try {
       await reveal(path);
     } catch (err) {
-      revealError = `Não foi possível abrir a pasta: ${err}`;
+      notice = { kind: "error", text: `Não foi possível abrir a pasta: ${err}` };
     }
+  }
+
+  async function moveSelected() {
+    busy = "trash";
+    notice = null;
+    try {
+      const report = await moveToTrash([...selection]);
+      onupdate(report.result);
+      const parts: string[] = [];
+      if (report.moved > 0) {
+        parts.push(
+          `${plural(report.moved, "arquivo movido", "arquivos movidos")} para a Lixeira (${formatBytes(report.moved_bytes)}).` +
+            " Dá para restaurar pela Lixeira do Nautilus; o espaço só é liberado ao esvaziá-la.",
+        );
+      }
+      if (report.rejected.length > 0) {
+        parts.push(`${plural(report.rejected.length, "arquivo recusado", "arquivos recusados")}:`);
+      }
+      notice = {
+        kind: report.rejected.length > 0 ? "error" : "ok",
+        text: parts.join(" "),
+        details: report.rejected.map((r) => `${fileName(r.path)}: ${r.reason}`),
+      };
+      reload++;
+    } catch (err) {
+      notice = { kind: "error", text: `Não foi possível mover para a Lixeira: ${err}` };
+    } finally {
+      busy = null;
+    }
+  }
+
+  async function runCleanup(kind: "empty" | DockerTarget, action: () => Promise<Cleanup>, done: string) {
+    busy = kind;
+    notice = null;
+    try {
+      const cleanup = await action();
+      onupdate(cleanup.result);
+      notice = { kind: "ok", text: `${done}: ${formatBytes(cleanup.freed_bytes)} liberados no disco.` };
+      reload++;
+    } catch (err) {
+      notice = { kind: "error", text: `A limpeza falhou: ${err}` };
+    } finally {
+      busy = null;
+    }
+  }
+
+  function askEmptyTrash() {
+    confirm = {
+      title: `Apagar permanentemente ${formatBytes(result.trash_bytes)}?`,
+      message: "Tudo o que está na Lixeira será apagado para sempre. Não dá para desfazer.",
+      confirmLabel: "Esvaziar Lixeira",
+      run: () => runCleanup("empty", emptyTrash, "Lixeira esvaziada"),
+    };
+  }
+
+  function askPrune(target: DockerTarget) {
+    const d = result.docker!;
+    confirm =
+      target === "build_cache"
+        ? {
+            title: `Limpar ${formatBytes(d.build_cache.reclaimable)} de build cache?`,
+            message: "O Docker recria o cache quando precisar; os próximos builds podem demorar mais.",
+            confirmLabel: "Limpar build cache",
+            run: () => runCleanup(target, () => dockerPrune(target), "Build cache limpo"),
+          }
+        : {
+            title: `Remover ${formatBytes(d.images.reclaimable)} de imagens não usadas?`,
+            message:
+              "Imagens que nenhum container usa serão apagadas e precisarão ser baixadas de novo na próxima vez.",
+            confirmLabel: "Remover imagens",
+            run: () => runCleanup(target, () => dockerPrune(target), "Imagens removidas"),
+          };
+  }
+
+  function onconfirm() {
+    const run = confirm?.run;
+    confirm = null;
+    run?.();
   }
 
   const dockerRows = $derived.by(() => {
@@ -78,7 +191,8 @@
   const dockerReclaimable = $derived(dockerRows.reduce((sum, r) => sum + r.item.reclaimable, 0));
 </script>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && onback()} />
+<!-- Com o diálogo aberto, o Esc é dele: fecha o diálogo, não o detalhe. -->
+<svelte:window onkeydown={(e) => e.key === "Escape" && !confirm && onback()} />
 
 <button class="back" onclick={onback}>
   <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5" /></svg>
@@ -93,6 +207,18 @@
     {#if stats}· {formatCount(stats.files)} arquivos{/if}
   </p>
 </header>
+
+{#if notice}
+  <div class="notice {notice.kind}" role="status">
+    <p>{notice.text}</p>
+    {#if notice.details?.length}
+      <ul>
+        {#each notice.details as line}<li>{line}</li>{/each}
+      </ul>
+    {/if}
+    <button class="dismiss" onclick={() => (notice = null)} aria-label="Fechar aviso">×</button>
+  </div>
+{/if}
 
 {#if segment.key === "apps_system"}
   {#if dockerPending}
@@ -121,6 +247,20 @@
           </li>
         {/each}
       </ul>
+      <div class="actions">
+        <button
+          onclick={() => askPrune("build_cache")}
+          disabled={busy !== null || result.docker.build_cache.reclaimable === 0}
+        >
+          {busy === "build_cache" ? "Limpando…" : "Limpar build cache"}
+        </button>
+        <button
+          onclick={() => askPrune("unused_images")}
+          disabled={busy !== null || result.docker.images.reclaimable === 0}
+        >
+          {busy === "unused_images" ? "Removendo…" : "Remover imagens não usadas"}
+        </button>
+      </div>
     </section>
   {/if}
 
@@ -137,6 +277,11 @@
   <section class="card info">
     <h2>Lixeira <span>{formatBytes(result.trash_bytes)}</span></h2>
     <p class="muted">Arquivos na Lixeira continuam ocupando espaço até ela ser esvaziada.</p>
+    <div class="actions">
+      <button class="destructive" onclick={askEmptyTrash} disabled={busy !== null}>
+        {busy === "empty" ? "Esvaziando…" : "Esvaziar Lixeira"}
+      </button>
+    </div>
   </section>
 {/if}
 
@@ -149,9 +294,6 @@
     </div>
   </div>
 
-  {#if revealError}
-    <p class="error">{revealError}</p>
-  {/if}
 
   {#if loadError}
     <p class="error">Erro ao carregar os arquivos: {loadError}</p>
@@ -162,7 +304,14 @@
   {:else}
     <ul class="files">
       {#each sorted as file (file.path)}
-        <FileRow {file} {home} {onreveal} />
+        <FileRow
+          {file}
+          {home}
+          selected={selection.has(file.path)}
+          disabled={busy !== null}
+          ontoggle={() => toggle(file.path)}
+          {onreveal}
+        />
       {/each}
     </ul>
     <p class="footnote">
@@ -170,6 +319,20 @@
     </p>
   {/if}
 </section>
+
+{#if selection.size > 0}
+  <div class="selection-bar">
+    <span>
+      {plural(selection.size, "selecionado", "selecionados")} · <strong>{formatBytes(selectedBytes)}</strong>
+    </span>
+    <button class="link" onclick={() => selection.clear()} disabled={busy !== null}>Limpar seleção</button>
+    <button class="primary" onclick={moveSelected} disabled={busy !== null}>
+      {busy === "trash" ? "Movendo…" : "Mover para a Lixeira"}
+    </button>
+  </div>
+{/if}
+
+<ConfirmDialog request={confirm} {onconfirm} oncancel={() => (confirm = null)} />
 
 <style>
   .back {
@@ -316,6 +479,97 @@
     justify-content: space-between;
     align-items: center;
     margin-bottom: 6px;
+  }
+
+  .notice {
+    position: relative;
+    margin-bottom: 14px;
+    padding: 10px 36px 10px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+  }
+
+  .notice.ok {
+    background: color-mix(in srgb, #34c759 16%, var(--surface));
+  }
+
+  .notice.error {
+    background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  }
+
+  .notice p {
+    margin: 0;
+  }
+
+  .notice ul {
+    margin: 4px 0 0;
+    padding-left: 18px;
+    list-style: disc;
+  }
+
+  .dismiss {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    padding: 2px 8px;
+    border: none;
+    background: none;
+    color: var(--text-secondary);
+    font-size: 18px;
+    cursor: pointer;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .actions button,
+  .selection-bar button {
+    padding: 5px 14px;
+    border: none;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .actions button.destructive {
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    color: var(--danger);
+  }
+
+  .selection-bar button.primary {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .selection-bar button.link {
+    margin-left: auto;
+    background: none;
+  }
+
+  button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .selection-bar {
+    position: sticky;
+    bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px 10px 18px;
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
   }
 
   .segmented {
