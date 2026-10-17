@@ -2,20 +2,59 @@
 node_modules/
 
 # Production & Build outputs
-/build
-/.svelte-kit
-/package
+build/
 dist/
+package/
+.svelte-kit/
 
 # Rust / Cargo
 target/
-src-tauri/target/
-src-tauri/gen/schemas
+**/target/
+src-tauri/gen/schemas/
+**/*.rs.bk
 
-# Environment & OS
-.DS_Store
+# Logs & Debug
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment & Secrets
 .env
 .env.*
 !.env.example
+
+# Vite / SvelteKit temporaries
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# IDEs & Editors
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+.cursor/
+.claude/
+CLAUDE.md
+CLAUDE.md.*
+
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+
+# Temporary & Database files
+*.tmp
+*.temp
+*.sqlite
+*.sqlite3
+*.db
+
