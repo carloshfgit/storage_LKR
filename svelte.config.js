@@ -8,6 +8,14 @@ import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
   preprocess: vitePreprocess(),
+  vitePlugin: {
+    // No dev, o CSS de cada componente vai junto do JS ("injected"), sem os módulos virtuais
+    // `X.svelte?svelte&type=style&lang.css`. Se o webview pede um deles antes de o componente
+    // ser compilado, o plugin devolve o `.svelte` cru como CSS: as regras ficam sem escopo
+    // (o `button { width: 100% }` do Suggestions vale para todos os botões) e o Vite guarda
+    // essa versão até o arquivo mudar (DECISIONS D43). O build continua com CSS em arquivo.
+    emitCss: process.env.NODE_ENV === "production",
+  },
   kit: {
     adapter: adapter({
       fallback: "index.html",

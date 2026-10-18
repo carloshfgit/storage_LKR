@@ -49,6 +49,7 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D39](#d39) | Sugestões no walk; caches inteiros para a Lixeira | ✅ | 10 |
 | [D41](#d41) | Lixeira com card próprio; itens pelo `id` do sistema | ✅ | 12 |
 | [D42](#d42) | Detalhe do Docker só de leitura, com dicas de comandos | ✅ | 13 |
+| [D43](#d43) | CSS dos componentes injetado pelo JS no dev | ✅ | 13 |
 
 ---
 
@@ -550,4 +551,21 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 - Os tamanhos são os do Docker (tamanho lógico, D15), e o de cada imagem inclui camadas compartilhadas, que a tela indica.
 - Abrir o detalhe durante um scan em segundo plano roda o `docker` junto com o walk, o que o deixa um pouco mais lento (§6.1).
 - Num Docker antigo, sem suporte a `system df -v --format json`, a tela mostra o erro e o card continua como antes.
+
+### D43 — CSS dos componentes injetado pelo JS no dev <a id="d43"></a>
+**Decisão:** no `vite dev`, o `svelte.config.js` usa `vitePlugin.emitCss = false`. Assim o compilador gera `css: "injected"`: cada componente insere o seu `<style>` com escopo pelo próprio JS. No build (`NODE_ENV=production`), o CSS continua extraído em arquivo, como antes.
+
+**Por quê:**
+- Com `emitCss` ligado, o JS de cada componente importa um módulo virtual, `X.svelte?svelte&type=style&lang.css`. O plugin só sabe respondê-lo com o CSS que guardou ao compilar o componente. Se o pedido chega antes disso, ele registra `failed to load virtual css module` e devolve `undefined`. O Vite então carrega o arquivo `.svelte` inteiro e o serve como CSS.
+- O navegador aproveita o que consegue desse texto. As regras saem **sem o escopo** do Svelte: o `button { width: 100%; display: grid }` e o `.card { margin-top: 14px; … }` do `Suggestions.svelte` e do `TrashCard.svelte` passam a valer para todos os botões e cards da página. Foi o que apareceu no `tauri dev`: botões esticados e o card da Lixeira com o espaçamento errado.
+- O erro fica: o Vite guarda essa versão no grafo de módulos (o ETag tem o tamanho do `.svelte` cru) e a entrega até o arquivo mudar. Recarregar a janela ou apagar `node_modules/.vite` não resolve.
+- Reproduzido pedindo o módulo de CSS antes do componente num servidor novo. O pedido antecipado aconteceu no webview do Tauri (WebKitGTK) do `tauri dev`, mas não se repetiu com o Chrome nem com o WebKitGTK isolados. Como o gatilho depende do momento e do cache do webview, a correção tira o módulo virtual do dev, em vez de tentar evitar o pedido.
+
+**Descartado:**
+- `css: "injected"` também no build: funcionaria (a CSP é `null`), mas troca um arquivo CSS em cache por estilos inseridos em tempo de execução, sem ganho. O problema é só do servidor de dev.
+- Esperar uma correção do `@sveltejs/vite-plugin-svelte`: a 7.3.1 já é a mais nova, e não há relato do problema.
+
+**Limitações:**
+- O dev e o build diferem em como o CSS chega à página. As regras e o escopo são os mesmos; `npm run tauri build` continua sendo a conferência final.
+- Um shell que exporte `NODE_ENV=production` liga o `emitCss` também no dev.
 

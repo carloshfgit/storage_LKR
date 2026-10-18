@@ -116,4 +116,5 @@ Se faltar um dos dois últimos, a chamada é recusada em tempo de execução.
 | Command recusado no Console (`not allowed`) | Command fora do `build.rs` ou da capability (veja a seção 7) |
 | Card Docker não aparece / "sem acesso" grande | Usuário fora do grupo `docker`, ou daemon parado (`systemctl status docker`) |
 | Primeiro scan bem mais lento (~12 s) | Cache de disco frio; os próximos levam ~2 s |
+| `failed to load virtual css module …svelte?svelte&type=style&lang.css` e estilos quebrados (botões esticados, cards com espaçamento errado) | O webview pediu o CSS de um componente antes de ele ser compilado, e o plugin entregou o `.svelte` cru, sem escopo. O dev agora injeta o CSS pelo JS (`emitCss` no `svelte.config.js`, DECISIONS D43), e o aviso não deve mais aparecer. Se voltar, confira se o shell não exporta `NODE_ENV=production` |
 | Porta 1420 ocupada no `tauri dev` | Instância anterior aberta em background: `pkill -f "tauri dev"` ou `pkill -f "vite"` |
