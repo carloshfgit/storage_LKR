@@ -13,8 +13,10 @@
     type ScanResult,
     type TrashItem,
   } from "./api";
+  import CommandLine from "./CommandLine.svelte";
   import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog.svelte";
   import { formatBytes, formatCount, formatRelativeDate } from "./format";
+  import { purgeNotice, rejectedDetails, type Notice } from "./notice";
 
   let {
     result,
@@ -37,7 +39,7 @@
   let reload = $state(0);
   const selection = new SvelteSet<string>();
   let busy = $state<"restore" | "purge" | "empty" | null>(null);
-  let notice = $state<{ kind: "ok" | "error"; text: string; details?: string[] } | null>(null);
+  let notice = $state<Notice | null>(null);
   let confirm = $state<(ConfirmRequest & { run: () => void }) | null>(null);
   let sortBy = $state<"size" | "date">("size");
 
@@ -65,15 +67,14 @@
   const totalBytes = $derived((items ?? []).reduce((sum, i) => sum + i.bytes, 0));
   const uncounted = $derived((items ?? []).filter((i) => !i.counted).length);
   const selectedBytes = $derived((items ?? []).reduce((sum, i) => sum + (selection.has(i.id) ? i.bytes : 0), 0));
+  /** Itens com pastas que o usuário não consegue esvaziar (do root, por exemplo). */
+  const blocked = $derived((items ?? []).filter((i) => i.blocked));
 
   const plural = (n: number, one: string, many: string) => `${formatCount(n)} ${n === 1 ? one : many}`;
-  const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
   function folder(path: string) {
     const dir = path.slice(0, path.lastIndexOf("/")) || "/";
     return home && (dir === home || dir.startsWith(home + "/")) ? "~" + dir.slice(home.length) : dir;
   }
-  /** Os recusados voltam com o caminho original ou, se nem estavam na Lixeira, com o id. */
-  const rejectedName = (path: string) => fileName(path).replace(/\.trashinfo$/, "");
 
   function toggle(id: string) {
     if (!selection.delete(id)) selection.add(id);
@@ -105,7 +106,7 @@
       notice = {
         kind: report.rejected.length > 0 ? "error" : "ok",
         text: parts.join(" "),
-        details: report.rejected.map((r) => `${rejectedName(r.path)}: ${r.reason}`),
+        details: rejectedDetails(report.rejected),
       };
       reload++;
     } catch (err) {
@@ -121,20 +122,7 @@
     try {
       const report = await purgeFromTrash(ids);
       onupdate(report.result);
-      const parts: string[] = [];
-      if (report.purged > 0) {
-        parts.push(
-          `${plural(report.purged, "item apagado", "itens apagados")}: ${formatBytes(report.freed_bytes)} liberados no disco.`,
-        );
-      }
-      if (report.rejected.length > 0) {
-        parts.push(`${plural(report.rejected.length, "item recusado", "itens recusados")}:`);
-      }
-      notice = {
-        kind: report.rejected.length > 0 ? "error" : "ok",
-        text: parts.join(" "),
-        details: report.rejected.map((r) => `${rejectedName(r.path)}: ${r.reason}`),
-      };
+      notice = purgeNotice(report, false);
       reload++;
     } catch (err) {
       notice = { kind: "error", text: `Não foi possível apagar: ${err}` };
@@ -147,9 +135,9 @@
     busy = "empty";
     notice = null;
     try {
-      const cleanup = await emptyTrash();
-      onupdate(cleanup.result);
-      notice = { kind: "ok", text: `Lixeira esvaziada: ${formatBytes(cleanup.freed_bytes)} liberados no disco.` };
+      const report = await emptyTrash();
+      onupdate(report.result);
+      notice = purgeNotice(report, true);
       reload++;
     } catch (err) {
       notice = { kind: "error", text: `A limpeza falhou: ${err}` };
@@ -171,7 +159,11 @@
   function askEmpty() {
     confirm = {
       title: `Apagar permanentemente ${formatBytes(totalBytes)}?`,
-      message: "Tudo o que está na Lixeira será apagado para sempre. Não dá para desfazer.",
+      message:
+        "Tudo o que está na Lixeira será apagado para sempre. Não dá para desfazer." +
+        (blocked.length > 0
+          ? ` ${plural(blocked.length, "item tem pastas que o app não consegue apagar e vai ficar", "itens têm pastas que o app não consegue apagar e vão ficar")}; o card acima da lista mostra como apagá-los pelo terminal.`
+          : ""),
       confirmLabel: "Esvaziar Lixeira",
       run: emptyAll,
     };
@@ -208,11 +200,44 @@
     <p>{notice.text}</p>
     {#if notice.details?.length}
       <ul>
-        {#each notice.details as line}<li>{line}</li>{/each}
+        {#each notice.details as detail}
+          <li>
+            {detail.text}
+            {#each detail.commands ?? [] as command (command)}<CommandLine {command} />{/each}
+          </li>
+        {/each}
       </ul>
     {/if}
     <button class="dismiss" onclick={() => (notice = null)} aria-label="Fechar aviso">×</button>
   </div>
+{/if}
+
+{#if blocked.length > 0}
+  <!-- Recolhido: os comandos só interessam a quem quiser resolver agora. -->
+  <details class="card blocked">
+    <summary>
+      <span class="title">
+        {plural(blocked.length, "item o app não consegue apagar", "itens o app não consegue apagar")}
+        <small>Clique para ver por quê e os comandos que resolvem pelo terminal</small>
+      </span>
+      <span class="total">{formatBytes(blocked.reduce((sum, i) => sum + i.bytes, 0))}</span>
+      <svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5" /></svg>
+    </summary>
+    <p class="muted">
+      O "Esvaziar Lixeira" apaga o resto e deixa estes. Rode os comandos no terminal; depois, os itens somem desta
+      lista.
+    </p>
+    <ul>
+      {#each blocked as item (item.id)}
+        <li>
+          <span class="name">{item.name}</span>
+          <span class="folder">{folder(item.original_path)} · {formatBytes(item.bytes)}</span>
+          <p>{item.blocked!.reason}</p>
+          {#each item.blocked!.commands as command (command)}<CommandLine {command} />{/each}
+        </li>
+      {/each}
+    </ul>
+  </details>
 {/if}
 
 <section class="card">
@@ -247,7 +272,9 @@
             aria-label="Selecionar {item.name}"
           />
           <div class="text">
-            <span class="name" title={item.name}>{item.name}</span>
+            <span class="name" title={item.name}>
+              {item.name}{#if item.blocked}<span class="badge" title={item.blocked.reason}>travado</span>{/if}
+            </span>
             <span class="folder" title={item.original_path}>
               {folder(item.original_path)}{#if item.files > 1} · {plural(item.files, "arquivo", "arquivos")}{/if}
             </span>
@@ -355,6 +382,86 @@
     background: var(--surface);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
+  }
+
+  summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    list-style: none;
+    cursor: pointer;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
+  }
+
+  summary .title {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  summary small {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 400;
+  }
+
+  summary .total {
+    color: var(--text-secondary);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .chevron {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: var(--text-secondary);
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform var(--duration) var(--ease);
+  }
+
+  .blocked[open] .chevron {
+    transform: rotate(90deg);
+  }
+
+  .blocked[open] small {
+    display: none;
+  }
+
+  .blocked > .muted {
+    margin: 10px 0 0;
+  }
+
+  .blocked li {
+    display: flex;
+    flex-direction: column;
+    padding: 8px 0;
+    border-top: 1px solid var(--separator);
+    font-size: 13px;
+  }
+
+  .blocked li:first-child {
+    border-top: none;
+  }
+
+  .blocked li p {
+    margin: 4px 0 0;
+  }
+
+  .badge {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    color: var(--danger);
+    font-size: 11px;
   }
 
   .muted,

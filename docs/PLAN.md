@@ -442,6 +442,33 @@ Hoje o card Docker mostra só o total de imagens, containers, volumes e build ca
 
 ---
 
+## Etapa 14 — Lixeira com itens travados
+"Esvaziar Lixeira" falhava inteiro com `PermissionDenied` quando um item tinha pastas do root (criadas por containers Docker), e a UI só dizia "A limpeza falhou" (DECISIONS D44).
+- [x] `walk.rs`: `locked_dirs(path) -> LockedDirs { count, foreign_owner }`, as pastas com conteúdo onde o usuário não tem `wx` (pela regra de dono, grupo e outros) ou que não consegue ler.
+- [x] `state/trash.rs`: `empty_trash` apaga item por item (mesmo caminho do `purge_from_trash`) e devolve `PurgeReport`. Tudo apagado → `clear_trash`; senão, `record_purged` só dos apagados.
+- [x] `TrashItem.blocked` e `Rejected.commands`: motivo e comandos (`sudo rm -rf`, a versão pelo Docker para pastas do root, `chmod -R u+w` para as do próprio usuário), com caminhos da listagem do sistema entre aspas simples.
+- [x] UI: selo "travado" e card com os itens travados no `TrashDetail`, aviso na confirmação do "Esvaziar Lixeira", recusados com os comandos e "Copiar" (`CommandLine.svelte`, reaproveitado no `DockerDetail`). O card Lixeira de Outros usa a mesma mensagem (`notice.ts`).
+- [x] Testes: `locked_dirs` com pasta só de leitura, pasta vazia e outro usuário; esvaziar com um item travado (o resto é apagado e a barra fecha o disco), falha sem pastas travadas (erro original, sem comandos), tudo apagado (Lixeira zerada), aspas no nome.
+- [x] Docs: ARCHITECTURE §7 e §8; DECISIONS D44.
+- [x] **Para outras máquinas:**
+  - o comando pelo Docker só aparece com um Docker do sistema no último scan;
+  - o motivo avisa quem não é administrador (`/etc/group`);
+  - um nome fora do UTF-8 fica sem comando;
+  - nas dicas de volume, a versão do daemon decide entre `volume prune` (23+) e o filtro por id;
+  - o card dos itens travados abre recolhido.
+
+**Resultado (18/10/2026):**
+- Na Lixeira desta máquina, `locked_dirs` achou 6 itens travados (`frontend`, `frontend.2`, `frontend.3`, `backend`, `backend.2`, `backend.3`), com 129 pastas do root, igual ao `find -type d ! -writable -not -empty`. Levou 25 ms para os 1.070 itens.
+- O comando pelo Docker, no formato gerado e com uma aspa no nome, apagou um item de teste com pastas do root criadas por um container, junto com o `.trashinfo`.
+- O filtro por id das dicas de volume (`volume ls -qf dangling=true | grep -E '^[0-9a-f]{64}$'`) seleciona aqui os 52 anônimos e deixa de fora os 4 com nome.
+- Workspace: 97 testes passam, clippy limpo, `npm run check` sem erros.
+- ⏳ **Falta a conferência visual**, que precisa ser feita por você:
+  1. Abrir a Lixeira, ver o card recolhido dos 6 itens travados e abri-lo.
+  2. "Esvaziar Lixeira": o resto é apagado e os 6 aparecem como recusados, com os comandos.
+  3. Rodar um dos comandos e ver o item sumir da lista.
+
+---
+
 ## Backlog (pós-MVP)
 1. Detalhar Apps por Snap, Flatpak e APT, com tamanho por app.
 2. Cards de sugestão: "Downloads antigos", "Caches", "10 maiores arquivos". → **Etapa 10** ✅

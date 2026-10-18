@@ -50,6 +50,7 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D41](#d41) | Lixeira com card próprio; itens pelo `id` do sistema | ✅ | 12 |
 | [D42](#d42) | Detalhe do Docker só de leitura, com dicas de comandos | ✅ | 13 |
 | [D43](#d43) | CSS dos componentes injetado pelo JS no dev | ✅ | 13 |
+| [D44](#d44) | Esvaziar a Lixeira item por item; itens travados com comandos para o terminal | ✅ | 14 |
 
 ---
 
@@ -539,11 +540,12 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 - O card só dizia "Volumes 16,7 GB". Nesta máquina, a lista mostra que 52 dos 56 volumes são anônimos e sem uso (16,4 GB), sobras de containers recriados, e que os 4 com nome (bancos de projetos) somam só 0,33 GB. Sem a lista, não dava para saber o que é lixo e o que é dado.
 - Sob demanda: o `-v` leva o mesmo tempo do `df` simples (cerca de 4,5 s), mas a saída tem cerca de 125 KB (252 entradas de build cache, labels dos containers). Guardar isso em cada resultado aumentaria o cache em disco e o evento `docker` para algo que só se vê ao abrir o detalhe. Trocar a consulta do scan pela `-v` também não foi feito: o card e a barra continuam com o `df` simples, que já está testado e é o que o `docker_prune` relê.
 - Dicas em vez de botões: remover um volume com nome ou um container pode perder dados, e o usuário é quem sabe se um banco ainda serve. O comando copiado deixa a decisão com ele, no terminal, onde o próprio `docker` pede confirmação. Para os anônimos, a dica aponta o `docker volume prune`, que desde o Docker 23 remove só volumes anônimos sem uso.
+- **Versão do daemon:** o detalhe também roda `docker version`. Só no Docker 23 ou mais novo a dica dos anônimos usa `docker volume prune`, que desde essa versão remove só os anônimos sem uso. Em versão anterior ou desconhecida, o mesmo comando apagaria os volumes com nome. Por isso a dica filtra pelo nome: `docker volume ls -qf dangling=true | grep -E '^[0-9a-f]{64}$' | xargs -r docker volume rm`. Antes da 23 não havia a label `com.docker.volume.anonymous`, então um volume também conta como anônimo quando o nome é um id de 64 dígitos hexadecimais.
 - No rootless, os comandos levam `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock`, pelo mesmo motivo do socket fixo (D38). A variável vale também para os plugins (`compose`, `buildx`), o que o `--host` não garante.
 - A saída do `-v` passa dos 64 KiB do pipe. A execução do `docker` passou a ler a saída numa thread enquanto espera o processo; esperar o exit antes de ler travaria o comando até o timeout.
 
 **Descartado:**
-- Botão "Remover volumes anônimos sem uso" (`docker volume prune -f`): seguro no Docker 23+, mas num Docker mais antigo o mesmo comando remove também os volumes com nome. Fica para uma etapa própria, que confira a versão do daemon antes.
+- Botão "Remover volumes anônimos sem uso" (`docker volume prune -f`): seguro no Docker 23+, mas num Docker mais antigo o mesmo comando remove também os volumes com nome. Fica para uma etapa própria; a versão do daemon já é lida para as dicas.
 - Remoção individual de volume, imagem ou container pela UI: exigiria mandar nomes da UI para a linha de comando, o que D19 evita, e reabriria D18.
 - Mostrar cada camada do build cache agrupada por Dockerfile: o `df -v` não diz de qual projeto é cada entrada. A lista vem por tamanho, com a descrição do passo e o último uso.
 
@@ -568,4 +570,33 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 **Limitações:**
 - O dev e o build diferem em como o CSS chega à página. As regras e o escopo são os mesmos; `npm run tauri build` continua sendo a conferência final.
 - Um shell que exporte `NODE_ENV=production` liga o `emitCss` também no dev.
+
+### D44 — Esvaziar a Lixeira item por item; itens travados com comandos para o terminal <a id="d44"></a>
+**Decisão:**
+- `empty_trash` apaga item por item, como o `purge_from_trash`. Um item que falha volta em `rejected` com o motivo, e os outros são apagados. O retorno passou de `Cleanup` para `PurgeReport`.
+- Na listagem, `locked_dirs` acha os itens com pastas que o usuário não consegue esvaziar. Eles aparecem como "travados", num card com o motivo e os comandos para o terminal. Os mesmos comandos voltam no recusado quando apagar falha.
+- O app **não** roda os comandos: mostra e copia. Para pastas do root, sugere `sudo rm -rf` e, sem sudo, um container do Docker que apaga pela pasta montada. Para pastas do próprio usuário sem escrita, `chmod -R u+w`.
+- As sugestões dependem do que o usuário tem (`Hints`):
+  - O comando pelo Docker só aparece se o último scan achou o Docker **do sistema** (rootful). No rootless e no Podman, o root do container é o próprio usuário e o comando falharia igual.
+  - Quem não está nos grupos `sudo`, `admin` ou `wheel` (lidos do `/etc/group`) vê que o `sudo` exige a senha de um administrador.
+  - Um item com nome fora do UTF-8 não ganha comando: o `�` faria o caminho copiado não corresponder ao real.
+- O card dos itens travados fica **recolhido**, com um convite para abrir.
+
+**Por quê:**
+- Nesta máquina, "Esvaziar Lixeira" falhava inteiro com `PermissionDenied` em `Trash/files/frontend`. O `purge_all` de todos os itens parava no primeiro erro, a UI dizia só "A limpeza falhou" e a barra não era atualizada, mesmo que parte já tivesse sido apagada. Seis itens da Lixeira (projetos `frontend` e `backend`) tinham 129 pastas do root: `.next`, `node_modules`, `.pytest_cache` e `__pycache__`, criadas por containers que rodam como root numa pasta montada.
+- Mandar para a Lixeira funcionou porque mover a pasta de cima exige permissão só no `$HOME`. Apagar exige `wx` em cada pasta que contém algo, e nas do root o usuário não tem.
+- Item por item: o usuário pediu para esvaziar, e um item travado não deveria impedir os outros. O liberado continua medido pelo `statvfs`, então conta também o que foi apagado dentro de um item que falhou no meio.
+- Mostrar em vez de executar: rodar `sudo` pediria senha numa janela que o app não controla, e apagar como root pelo app abriria um caminho de escalada que o resto do projeto evita (D19). O comando copiado deixa a decisão com o usuário. Os caminhos vêm da listagem do sistema, nunca da UI, e entram entre aspas simples.
+- Detectar ao listar, e não só quando falha: percorrer a Lixeira levou 25 ms (5.915 entradas). O usuário vê antes de confirmar quais itens vão ficar, sem precisar tentar. A conferência de permissão segue a regra do kernel (dono, grupo, outros), e uma pasta vazia sem escrita não trava nada, porque quem a remove é a pasta de cima.
+
+**Descartado:**
+- `pkexec rm -rf` pelo app: resolveria num clique, mas apagar como root a partir da UI é exatamente o que D19 evita. Fica para o modo privilegiado do backlog, se um dia existir.
+- Contar as pastas travadas no walk (guardando no `TrashEntry`): mudaria o formato do cache por algo que a listagem calcula na hora, e ficaria velho entre os scans.
+- Pular os itens travados sem tentar: o que é do usuário dentro deles seria apagado na tentativa, e o "liberado" medido mostra isso.
+
+**Limitações:**
+- Um item que falha no meio fica parcialmente apagado. Ele continua na lista com o tamanho do scan até o próximo scan.
+- A checagem não considera ACLs nem o atributo imutável (`chattr +i`). Nesses casos, o recusado vem com o erro do sistema, sem comandos.
+- O comando do Docker não funciona se o caminho da Lixeira tiver `:` (separador do `-v`); o do `sudo` continua valendo.
+- Ser de um grupo de administradores não garante o `sudo` (o sudoers pode ser outro), e o contrário também vale. É só para escolher o texto; o comando é o mesmo.
 

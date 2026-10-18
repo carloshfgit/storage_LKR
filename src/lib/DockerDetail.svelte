@@ -3,6 +3,7 @@
      sendo os botões do card Docker (DECISIONS D18, D42). -->
 <script lang="ts">
   import { dockerDetails, type DockerDetails, type DockerMode, type ScanResult } from "./api";
+  import CommandLine from "./CommandLine.svelte";
   import { formatBytes, formatCount, formatRelativeDate } from "./format";
 
   let {
@@ -32,7 +33,6 @@
   let loadError = $state("");
   let tab = $state<Tab | null>(null);
   let showAll = $state(false);
-  let copied = $state<string | null>(null);
 
   $effect(() => {
     const requested = mode;
@@ -64,6 +64,8 @@
   };
 
   const sum = (items: { size: number }[]) => items.reduce((s, i) => s + i.size, 0);
+  /** No Docker 23+, `volume prune` sem `-a` só apaga anônimos; antes, apagava também os com nome. */
+  const safePrune = $derived(Number(details?.server_version?.split(".")[0]) >= 23);
   const plural = (n: number, one: string, many: string) => `${formatCount(n)} ${n === 1 ? one : many}`;
   const short = (id: string) => id.replace(/^sha256:/, "").slice(0, 12);
   const STATES: Record<string, string> = {
@@ -148,13 +150,27 @@
         const anon = details.volumes.filter((v) => v.anonymous && v.links === 0);
         const named = details.volumes.filter((v) => !v.anonymous && v.links === 0);
         if (anon.length > 0) {
-          tips.push({
-            text:
-              `${plural(anon.length, "volume anônimo está", "volumes anônimos estão")} sem uso (${formatBytes(sum(anon))}). ` +
-              "Eles sobram quando um container é recriado e quase nunca guardam algo importante. " +
-              "No Docker 23 ou mais novo, este comando remove só os anônimos sem uso:",
-            command: `${docker} volume prune`,
-          });
+          const intro =
+            `${plural(anon.length, "volume anônimo está", "volumes anônimos estão")} sem uso (${formatBytes(sum(anon))}). ` +
+            "Eles sobram quando um container é recriado e quase nunca guardam algo importante. ";
+          tips.push(
+            safePrune
+              ? {
+                  text: intro + `Neste Docker (${details.server_version}), este comando remove só os anônimos sem uso:`,
+                  command: `${docker} volume prune`,
+                }
+              : {
+                  // Antes da 23, o prune levaria junto os volumes com nome: filtra pelo id.
+                  text:
+                    intro +
+                    `${details.server_version ? `Neste Docker (${details.server_version})` : "Nesta versão do Docker"}, ` +
+                    "o docker volume prune apagaria também os volumes com nome. Este comando remove só os sem uso com nome de id:",
+                  // `xargs` não aceita `VAR=…` antes do comando: no rootless, a variável é exportada.
+                  command:
+                    (mode === "rootless" ? "export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock; " : "") +
+                    "docker volume ls -qf dangling=true | grep -E '^[0-9a-f]{64}$' | xargs -r docker volume rm",
+                },
+          );
         }
         if (named.length > 0) {
           tips.push({
@@ -236,15 +252,6 @@
     showAll = false;
   }
 
-  async function copy(command: string) {
-    try {
-      await navigator.clipboard.writeText(command);
-      copied = command;
-      setTimeout(() => copied === command && (copied = null), 1500);
-    } catch {
-      // Sem permissão de área de transferência: o comando continua selecionável.
-    }
-  }
 </script>
 
 <svelte:window onkeydown={(e) => e.key === "Escape" && onback()} />
@@ -289,14 +296,7 @@
       {#each tips as tip (tip.text)}
         <li>
           <p>{tip.text}</p>
-          {#if tip.command}
-            <div class="command">
-              <code>{tip.command}</code>
-              <button onclick={() => copy(tip.command!)} aria-label="Copiar comando">
-                {copied === tip.command ? "Copiado" : "Copiar"}
-              </button>
-            </div>
-          {/if}
+          {#if tip.command}<CommandLine command={tip.command} />{/if}
         </li>
       {/each}
     </ul>
@@ -470,26 +470,6 @@
     border-top: none;
   }
 
-  .command {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 6px;
-    padding: 6px 6px 6px 10px;
-    border-radius: 8px;
-    background: var(--track);
-  }
-
-  code {
-    flex: 1;
-    overflow-x: auto;
-    font-family: ui-monospace, "SF Mono", "DejaVu Sans Mono", monospace;
-    font-size: 12px;
-    white-space: nowrap;
-    user-select: text;
-  }
-
-  .command button,
   .more {
     flex: none;
     padding: 3px 12px;

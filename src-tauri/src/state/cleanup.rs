@@ -43,10 +43,13 @@ pub struct FileItem {
     pub trashable: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Rejected {
     pub path: String,
     pub reason: String,
+    /// Comandos para o usuário resolver pelo terminal, quando o app não consegue.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,6 +145,7 @@ impl AppState {
                 Err(reason) => rejected.push(Rejected {
                     path: path.to_string_lossy().into_owned(),
                     reason,
+                    ..Default::default()
                 }),
             }
         }
@@ -181,6 +185,7 @@ impl AppState {
                 Err(reason) => rejected.push(Rejected {
                     path: path.to_string_lossy().into_owned(),
                     reason,
+                    ..Default::default()
                 }),
             }
         }
@@ -193,16 +198,6 @@ impl AppState {
             rejected,
             result: result.clone(),
         })
-    }
-
-    /// Apaga permanentemente o conteúdo da Lixeira. O único apagamento do app (D17).
-    pub fn empty_trash(
-        &self,
-        confirm: bool,
-        purge: impl FnOnce() -> Result<(), String>,
-        disk: impl Fn() -> io::Result<DiskInfo>,
-    ) -> Result<Cleanup, ActionError> {
-        self.measured_cleanup(confirm, purge, disk, |r, ()| r.clear_trash())
     }
 
     /// Limpa build cache ou imagens sem uso no daemon de `mode` e relê só ele para
@@ -519,38 +514,6 @@ mod tests {
             .state
             .move_to_trash(&[f.home.join("foto.jpg")], |_| Ok(()));
         assert!(matches!(err, Err(ActionError::Busy)));
-    }
-
-    #[test]
-    fn empty_trash_needs_confirmation_and_measures_freed_space() {
-        let f = fixture("empty");
-        let available = Cell::new(100);
-
-        let purged = Cell::new(false);
-        let purge = || {
-            purged.set(true);
-            Ok(())
-        };
-        let err = f.state.empty_trash(false, purge, fake_disk(&available));
-        assert!(matches!(err, Err(ActionError::NotConfirmed)));
-        assert!(!purged.get());
-
-        let cleanup = f
-            .state
-            .empty_trash(
-                true,
-                || {
-                    available.set(100 + 40_000);
-                    Ok(())
-                },
-                fake_disk(&available),
-            )
-            .unwrap();
-        assert_eq!(cleanup.freed_bytes, 40_000);
-        assert_eq!(cleanup.result.trash_bytes, 0);
-        assert_eq!(cleanup.result.disk.available_bytes, 40_100);
-        let lixeira = f.home.join(".local/share/Trash/files/velho.mp4");
-        assert!(cleanup.result.find_file(&lixeira).is_none());
     }
 
     /// Reescaneia a fixture com `~/Downloads` ligado, depois de criar mais arquivos.

@@ -21,4 +21,4 @@ pub use model::{
     ScanResult, SuggestedFile, Suggestions, TrashEntry,
 };
 pub use suggest::{MAX_CACHE_ENTRIES, OLD_DOWNLOAD_DAYS};
-pub use walk::{ScanError, ScanOptions, scan, tree_size};
+pub use walk::{LockedDirs, ScanError, ScanOptions, locked_dirs, scan, tree_size};

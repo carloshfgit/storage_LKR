@@ -282,6 +282,80 @@ pub fn tree_size(path: &Path) -> (u64, u64) {
     total
 }
 
+/// Pastas dentro de um item (ele incluído) que o usuário atual não consegue esvaziar.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LockedDirs {
+    pub count: u64,
+    /// Dono da primeira delas que é de outro usuário (o root, quando um container Docker
+    /// criou a pasta num diretório montado). `None` se todas são do próprio usuário, só sem
+    /// permissão de escrita.
+    pub foreign_owner: Option<u32>,
+}
+
+/// Apagar um arquivo exige escrita e acesso (`wx`) na pasta que o contém. Conta as pastas
+/// de `path` com conteúdo onde o usuário atual não tem isso, ou que nem consegue ler:
+/// o que vai fazer um apagamento falhar com "Permissão negada". Não segue links nem cruza
+/// filesystems, como o `tree_size`.
+pub fn locked_dirs(path: &Path) -> LockedDirs {
+    let uid = rustix::process::getuid().as_raw();
+    let mut gids = vec![rustix::process::getgid().as_raw()];
+    if let Ok(groups) = rustix::process::getgroups() {
+        gids.extend(groups.iter().map(|g| g.as_raw()));
+    }
+    locked_dirs_as(path, uid, &gids)
+}
+
+fn locked_dirs_as(path: &Path, uid: u32, gids: &[u32]) -> LockedDirs {
+    let mut locked = LockedDirs::default();
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return locked;
+    };
+    if !meta.is_dir() {
+        return locked;
+    }
+    let dev = meta.dev();
+    let mut pending = vec![(path.to_path_buf(), meta)];
+    while let Some((dir, meta)) = pending.pop() {
+        let mut lock = |owner: u32| {
+            locked.count += 1;
+            if owner != uid {
+                locked.foreign_owner.get_or_insert(owner);
+            }
+        };
+        let Ok(read) = fs::read_dir(&dir) else {
+            lock(meta.uid());
+            continue;
+        };
+        let mut empty = true;
+        for child in read.flatten() {
+            empty = false;
+            let Ok(child_meta) = child.metadata() else {
+                continue;
+            };
+            if child_meta.is_dir() && child_meta.dev() == dev {
+                pending.push((child.path(), child_meta));
+            }
+        }
+        if !empty && !writable(&meta, uid, gids) {
+            lock(meta.uid());
+        }
+    }
+    locked
+}
+
+/// `wx` para o usuário, pelo dono, pelo grupo ou pelos outros, como o kernel decide.
+fn writable(meta: &fs::Metadata, uid: u32, gids: &[u32]) -> bool {
+    let mode = meta.mode();
+    let wx = if meta.uid() == uid {
+        mode >> 6
+    } else if gids.contains(&meta.gid()) {
+        mode >> 3
+    } else {
+        mode
+    };
+    wx & 0o3 == 0o3
+}
+
 fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -677,6 +751,57 @@ mod tests {
         );
         assert!(r.trash_items.iter().map(|t| t.bytes).sum::<u64>() < r.trash_bytes);
 
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn finds_dirs_the_user_cannot_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("lkr-locked-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("item/somente-leitura")).unwrap();
+        fs::create_dir_all(dir.join("item/vazia")).unwrap();
+        fs::write(dir.join("item/somente-leitura/a.txt"), "x").unwrap();
+        fs::write(dir.join("item/b.txt"), "x").unwrap();
+        let item = dir.join("item");
+        let me = rustix::process::getuid().as_raw();
+        let gids = [rustix::process::getgid().as_raw()];
+
+        assert_eq!(locked_dirs_as(&item, me, &gids), LockedDirs::default());
+
+        let ro = dir.join("item/somente-leitura");
+        let vazia = dir.join("item/vazia");
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o555)).unwrap();
+        // Vazia sem escrita não trava nada: quem a remove é a pasta de cima.
+        fs::set_permissions(&vazia, fs::Permissions::from_mode(0o555)).unwrap();
+        assert_eq!(
+            locked_dirs_as(&item, me, &gids),
+            LockedDirs {
+                count: 1,
+                foreign_owner: None
+            }
+        );
+
+        // Visto por outro usuário sem grupo em comum, as pastas com conteúdo são de um
+        // dono alheio e sem escrita para os outros (como as do root criadas pelo Docker).
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o755)).unwrap();
+        let other = me.wrapping_add(1);
+        assert_eq!(
+            locked_dirs_as(&item, other, &[]),
+            LockedDirs {
+                count: 2,
+                foreign_owner: Some(me)
+            }
+        );
+        // Escrita liberada para todos: ninguém fica travado.
+        fs::set_permissions(&item, fs::Permissions::from_mode(0o777)).unwrap();
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o777)).unwrap();
+        assert_eq!(locked_dirs_as(&item, other, &[]).count, 0);
+
+        assert_eq!(locked_dirs_as(&dir.join("item/b.txt"), me, &gids).count, 0);
+        assert_eq!(locked_dirs_as(&dir.join("nao-existe"), me, &gids).count, 0);
+
+        fs::set_permissions(&vazia, fs::Permissions::from_mode(0o755)).unwrap();
         fs::remove_dir_all(&dir).unwrap();
     }
 }

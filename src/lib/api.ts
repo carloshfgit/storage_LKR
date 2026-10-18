@@ -166,10 +166,18 @@ export function reveal(path: string): Promise<void> {
   return invoke("reveal", { path });
 }
 
+/** Item recusado por uma ação, com o motivo. */
+export interface Rejected {
+  path: string;
+  reason: string;
+  /** Comandos para resolver pelo terminal, quando o app não consegue (pastas do root, por exemplo). */
+  commands?: string[];
+}
+
 export interface TrashReport {
   moved: number;
   moved_bytes: number;
-  rejected: { path: string; reason: string }[];
+  rejected: Rejected[];
   /** Último resultado já atualizado no Rust. */
   result: ScanResult;
 }
@@ -187,8 +195,8 @@ export function moveToTrash(paths: string[]): Promise<TrashReport> {
   return invoke("move_to_trash", { paths });
 }
 
-/** Apaga permanentemente a Lixeira. Chamar só depois da confirmação do usuário. */
-export function emptyTrash(): Promise<Cleanup> {
+/** Apaga permanentemente a Lixeira, item por item; os que falham voltam em `rejected`. Chamar só depois da confirmação do usuário. */
+export function emptyTrash(): Promise<PurgeReport> {
   return invoke("empty_trash", { confirm: true });
 }
 
@@ -247,6 +255,8 @@ export interface DockerCacheEntry {
 
 /** `docker system df -v` de um daemon; cada lista do maior para o menor. */
 export interface DockerDetails {
+  /** Versão do daemon (`"29.9.1"`); `null` se não deu para saber. */
+  server_version: string | null;
   images: DockerImage[];
   containers: DockerContainer[];
   volumes: DockerVolume[];
@@ -272,12 +282,14 @@ export interface TrashItem {
   files: number;
   /** Contado no último scan; senão, o tamanho foi medido agora e ainda não está na barra. */
   counted: boolean;
+  /** Tem pastas que o usuário não consegue esvaziar: apagar pelo app vai falhar. */
+  blocked: { reason: string; commands: string[] } | null;
 }
 
 export interface PurgeReport {
   purged: number;
   freed_bytes: number;
-  rejected: { path: string; reason: string }[];
+  rejected: Rejected[];
   result: ScanResult;
 }
 

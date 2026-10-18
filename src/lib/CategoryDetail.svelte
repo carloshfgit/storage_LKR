@@ -18,9 +18,11 @@
     type ScanResult,
   } from "./api";
   import type { Segment } from "./categories";
+  import CommandLine from "./CommandLine.svelte";
   import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog.svelte";
   import { formatBytes, formatCount, formatPercent } from "./format";
   import FileRow from "./FileRow.svelte";
+  import { purgeNotice, type Notice } from "./notice";
 
   let {
     segment,
@@ -57,7 +59,7 @@
   /** Ação em andamento; enquanto houver uma, as outras ficam travadas. */
   type PruneKey = `${DockerMode}:${DockerTarget}`;
   let busy = $state<"trash" | "empty" | PruneKey | null>(null);
-  let notice = $state<{ kind: "ok" | "error"; text: string; details?: string[] } | null>(null);
+  let notice = $state<Notice | null>(null);
   let confirm = $state<(ConfirmRequest & { run: () => void }) | null>(null);
   let sortBy = $state<"size" | "date">("size");
 
@@ -126,7 +128,7 @@
       notice = {
         kind: report.rejected.length > 0 ? "error" : "ok",
         text: parts.join(" "),
-        details: report.rejected.map((r) => `${fileName(r.path)}: ${r.reason}`),
+        details: report.rejected.map((r) => ({ text: `${fileName(r.path)}: ${r.reason}` })),
       };
       reload++;
     } catch (err) {
@@ -136,7 +138,22 @@
     }
   }
 
-  async function runCleanup(kind: "empty" | PruneKey, action: () => Promise<Cleanup>, done: string) {
+  async function emptyAll() {
+    busy = "empty";
+    notice = null;
+    try {
+      const report = await emptyTrash();
+      onupdate(report.result);
+      notice = purgeNotice(report, true);
+      reload++;
+    } catch (err) {
+      notice = { kind: "error", text: `A limpeza falhou: ${err}` };
+    } finally {
+      busy = null;
+    }
+  }
+
+  async function runCleanup(kind: PruneKey, action: () => Promise<Cleanup>, done: string) {
     busy = kind;
     notice = null;
     try {
@@ -156,7 +173,7 @@
       title: `Apagar permanentemente ${formatBytes(result.trash_bytes)}?`,
       message: "Tudo o que está na Lixeira será apagado para sempre. Não dá para desfazer.",
       confirmLabel: "Esvaziar Lixeira",
-      run: () => runCleanup("empty", emptyTrash, "Lixeira esvaziada"),
+      run: emptyAll,
     };
   }
 
@@ -248,7 +265,12 @@
     <p>{notice.text}</p>
     {#if notice.details?.length}
       <ul>
-        {#each notice.details as line}<li>{line}</li>{/each}
+        {#each notice.details as detail}
+          <li>
+            {detail.text}
+            {#each detail.commands ?? [] as command (command)}<CommandLine {command} />{/each}
+          </li>
+        {/each}
       </ul>
     {/if}
     <button class="dismiss" onclick={() => (notice = null)} aria-label="Fechar aviso">×</button>

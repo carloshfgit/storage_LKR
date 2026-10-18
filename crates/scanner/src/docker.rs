@@ -176,6 +176,9 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Option<String> {
 /// `docker system df -v` lista. Cada lista vem do maior para o menor.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DockerDetails {
+    /// Versão do daemon (`"29.9.1"`). Antes da 23, o `docker volume prune` apaga também
+    /// volumes com nome; `None` se não deu para saber.
+    pub server_version: Option<String>,
     pub images: Vec<DockerImage>,
     pub containers: Vec<DockerContainer>,
     pub volumes: Vec<DockerVolume>,
@@ -238,11 +241,19 @@ pub struct DockerCacheEntry {
 /// Roda `docker system df -v --format json` no daemon de `mode`. `None` nos mesmos casos
 /// do `docker_usage`.
 pub fn docker_details(mode: DockerMode, timeout: Duration) -> Option<DockerDetails> {
-    parse_details(&run_docker(
+    let mut details = parse_details(&run_docker(
         mode,
         &["system", "df", "-v", "--format", "json"],
         timeout,
-    )?)
+    )?)?;
+    details.server_version = run_docker(
+        mode,
+        &["version", "--format", "{{.Server.Version}}"],
+        timeout,
+    )
+    .map(|v| v.trim().to_string())
+    .filter(|v| !v.is_empty());
+    Some(details)
 }
 
 /// O que o app sabe limpar no Docker. Volumes ficam de fora de propósito: guardam dados
@@ -404,6 +415,7 @@ fn parse_details(out: &str) -> Option<DockerDetails> {
     let count = |s: &str| s.trim().parse::<u64>().unwrap_or(0);
 
     let mut d = DockerDetails {
+        server_version: None,
         images: v
             .images
             .into_iter()
@@ -436,7 +448,8 @@ fn parse_details(out: &str) -> Option<DockerDetails> {
             .map(|vol| DockerVolume {
                 size: size(&vol.size),
                 links: count(&vol.links),
-                anonymous: label(&vol.labels, "com.docker.volume.anonymous").is_some(),
+                anonymous: label(&vol.labels, "com.docker.volume.anonymous").is_some()
+                    || is_anonymous_name(&vol.name),
                 project: label(&vol.labels, "com.docker.compose.project"),
                 name: vol.name,
             })
@@ -460,6 +473,15 @@ fn parse_details(out: &str) -> Option<DockerDetails> {
     d.volumes.sort_by_key(|i| std::cmp::Reverse(i.size));
     d.build_cache.sort_by_key(|i| std::cmp::Reverse(i.size));
     Some(d)
+}
+
+/// Antes do Docker 23 não havia a label `com.docker.volume.anonymous`; um volume anônimo
+/// se reconhece pelo nome, um id de 64 dígitos hexadecimais.
+fn is_anonymous_name(name: &str) -> bool {
+    name.len() == 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Valor de uma label no formato `chave=valor,chave=valor` do Docker. Uma label sem
@@ -665,6 +687,9 @@ mod tests {
 
         let names: Vec<_> = d.volumes.iter().map(|v| v.name.as_str()).collect();
         assert_eq!(names, ["4a92", "udrive_postgres_data", "nfs"]);
+        assert!(is_anonymous_name(&"a3".repeat(32)));
+        assert!(!is_anonymous_name("udrive_postgres_data"));
+        assert!(!is_anonymous_name(&"A3".repeat(32)));
         assert!(d.volumes[0].anonymous && d.volumes[0].links == 0);
         assert!(!d.volumes[1].anonymous);
         assert_eq!(d.volumes[1].project.as_deref(), Some("udrive"));

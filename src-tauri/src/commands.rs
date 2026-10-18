@@ -107,11 +107,19 @@ pub fn move_to_trash(
         .map_err(|e| e.to_string())
 }
 
-/// Apaga permanentemente tudo o que está na Lixeira. Exige `confirm == true`.
+/// Apaga permanentemente tudo o que está na Lixeira, item por item: um item que o usuário
+/// não consegue apagar volta recusado, com os comandos, e não impede o resto. Exige
+/// `confirm == true`.
 #[tauri::command(async)]
-pub fn empty_trash(state: State<'_, Arc<AppState>>, confirm: bool) -> Result<Cleanup, String> {
+pub fn empty_trash(state: State<'_, Arc<AppState>>, confirm: bool) -> Result<PurgeReport, String> {
     state
-        .empty_trash(confirm, purge_trash, root_disk)
+        .empty_trash(
+            confirm,
+            list_trash,
+            purge_trash_item,
+            root_disk,
+            scanner::locked_dirs,
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -148,7 +156,7 @@ pub fn docker_details(mode: DockerMode) -> Result<DockerDetails, String> {
 #[tauri::command(async)]
 pub fn trash_items(state: State<'_, Arc<AppState>>) -> Result<Vec<TrashItem>, String> {
     state
-        .trash_items(list_trash, scanner::tree_size)
+        .trash_items(list_trash, scanner::tree_size, scanner::locked_dirs)
         .map_err(|e| e.to_string())
 }
 
@@ -176,8 +184,9 @@ pub fn purge_from_trash(
             &ids,
             confirm,
             list_trash,
-            |item| trash::os_limited::purge_all([os_item(item)]).map_err(|e| e.to_string()),
+            purge_trash_item,
             root_disk,
+            scanner::locked_dirs,
         )
         .map_err(|e| e.to_string())
 }
@@ -219,7 +228,6 @@ fn root_disk() -> std::io::Result<DiskInfo> {
     scanner::disk_info(Path::new(SCAN_ROOT))
 }
 
-fn purge_trash() -> Result<(), String> {
-    let items = trash::os_limited::list().map_err(|e| e.to_string())?;
-    trash::os_limited::purge_all(items).map_err(|e| e.to_string())
+fn purge_trash_item(item: &TrashListing) -> Result<(), String> {
+    trash::os_limited::purge_all([os_item(item)]).map_err(|e| e.to_string())
 }
