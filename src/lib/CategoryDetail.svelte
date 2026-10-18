@@ -340,6 +340,9 @@
   {:else if files.length === 0}
     <p class="muted">Nenhum arquivo nesta categoria.</p>
   {:else}
+    {#if selection.size === 0 && files.some((f) => f.trashable)}
+      <p class="hint">Dica: clique no quadrado ao lado de um item para selecioná-lo.</p>
+    {/if}
     <ul class="files">
       {#each sorted as file (file.path)}
         <FileRow
@@ -467,6 +470,12 @@
 
   .footnote {
     margin: 8px 0 0;
+  }
+
+  .hint {
+    margin: 0 0 6px;
+    color: var(--text-secondary);
+    font-size: 13px;
   }
 
   .error {

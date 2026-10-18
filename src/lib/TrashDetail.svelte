@@ -232,6 +232,9 @@
         {busy === "empty" ? "Esvaziando…" : "Esvaziar Lixeira"}
       </button>
     </div>
+    {#if selection.size === 0}
+      <p class="hint">Dica: clique no quadrado ao lado de um item para selecioná-lo.</p>
+    {/if}
     <ul class="items">
       {#each sorted as item (item.id)}
         {@const date = new Date(item.deleted_at * 1000).toLocaleString("pt-BR")}
@@ -362,6 +365,12 @@
 
   .footnote {
     margin: 8px 0 0;
+  }
+
+  .hint {
+    margin: 0 0 6px;
+    color: var(--text-secondary);
+    font-size: 13px;
   }
 
   .error {
