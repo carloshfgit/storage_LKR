@@ -90,6 +90,7 @@ pub struct ScanResult {
     categories: HashMap<Category, CategoryStats>,
     trash_bytes: u64,                     // subitem de Other
     trash_files: u64,                     // arquivos dentro da Lixeira, já contados em Other
+    sniffed_files: u64, sniffed_bytes: u64, // sem extensão, classificados pelo conteúdo (§5, regra 6b)
     home: PathBuf,                        // $HOME da classificação; não serializado
     docker: Option<DockerUsage>,          // preenchido depois, por apply_docker (§6.1)
     docker_bytes: u64,                    // parte do restante atribuída ao Docker
@@ -121,6 +122,7 @@ Métodos usados pelas ações de limpeza (§7), todos mantendo a barra em 100%:
 | Agregação | Por categoria: `bytes`, `files` e `BinaryHeap<Reverse<(bytes, path)>>` limitado a **N = 200**. Só o top-N vai para a UI, nunca os mais de 600 mil arquivos |
 | Progresso | Um callback `Fn(ScanProgress)` com rate-limit de cerca de 100 ms (bytes por categoria e arquivos vistos) |
 | Cancelamento | `Arc<AtomicBool>`, checado no laço do walk |
+| Conteúdo | Para arquivos regulares a que `classify_by_path` não sabe dar categoria (regra 6b), `sniff` lê o cabeçalho ali mesmo, nas threads do rayon. `ScanOptions.sniff = false` desliga (`scan --no-sniff`) |
 
 **Meta de desempenho** (SSD, 4 núcleos, cache quente): `/` com cerca de 1 milhão de entradas em **menos de 5 s**. O primeiro scan com cache frio pode levar mais.
 
@@ -138,7 +140,8 @@ Métodos usados pelas ações de limpeza (§7), todos mantendo a barra em 100%:
 | 4 | Dentro de `$HOME` com qualquer componente oculto (`.cache`, `.mozilla`, `.config`…) | **Outros** |
 | 5 | **Build/dev**: componente `node_modules`, `__pycache__` ou `site-packages`, ou o par `target/debug` / `target/release` (Cargo) | **Outros** |
 | 6 | Dentro de `$HOME`, visível, extensão (minúscula) na tabela abaixo | Fotos / Vídeos / Áudio / Documentos |
-| 7 | Dentro de `$HOME`, visível, outra extensão (zip, iso, código, sem extensão) | **Outros** |
+| 6b | Dentro de `$HOME`, visível, **sem extensão**, arquivo regular com 4 KiB ou mais: assinatura do cabeçalho (`sniff.rs`) | Fotos / Vídeos / Áudio / Documentos |
+| 7 | Dentro de `$HOME`, visível, outra extensão (zip, iso, código) ou sem extensão e sem assinatura conhecida | **Outros** |
 | 8 | Fora de `$HOME` e não coberto acima (`/var/log`, `/srv`, `/root`…) | **Apps/Sistema** |
 
 Por que essa ordem:
@@ -165,7 +168,16 @@ Detalhes de implementação:
 
 `.ts` **não** é vídeo: nesta máquina, 37.267 dos 37.285 "vídeos" eram TypeScript. MPEG-TS é raro no desktop (DECISIONS D22).
 
-Não há leitura de conteúdo (magic bytes) no MVP, porque custaria um `open` + `read` por arquivo.
+**Conteúdo (regra 6b, Etapa 8, DECISIONS D37):** `classify` continua pura. O walk chama `classify_by_path`, que devolve `None` só no caso da regra 6b. Nesse caso, e só para arquivos regulares com pelo menos `MIN_SNIFF_BYTES` (4 KiB), `sniff(path)` lê até 32 bytes, com `O_NOATIME`, e compara com uma tabela estática:
+
+| Categoria | Assinaturas |
+|---|---|
+| Fotos | JPEG, PNG, GIF, TIFF (e RAW baseados nele), WebP (`RIFF…WEBP`), HEIC/AVIF (`ftyp` + `heic`, `mif1`, `avif`…) |
+| Vídeos | `ftyp` + `isom`, `mp4x`, `qt  `, `M4V `, `3gpx`…; Matroska/WebM; AVI (`RIFF…AVI `); MPEG-PS |
+| Áudio | `ID3`, quadro MPEG/ADTS sem tag, `fLaC`, `OggS`, WAV (`RIFF…WAVE`), AIFF, `ftyp` + `M4A `/`M4B ` |
+| Documentos | `%PDF-` |
+
+ZIP (docx, odt, epub), ELF, scripts e qualquer erro de leitura ficam em Outros. Os bytes não mudam, só a categoria: o total continua batendo com `du`/`df`. `ScanResult.sniffed_files/bytes` contam os reclassificados. Medido: walk de `/` sem diferença além do ruído (cerca de 400 leituras no `$HOME` desta máquina).
 
 ---
 
@@ -328,4 +340,3 @@ O último `ScanResult` é salvo em `$XDG_CACHE_HOME/storage-lkr/last.json` (norm
 - Atualização incremental com inotify ou fanotify.
 - Modo privilegiado via `pkexec` para zerar o "sem acesso".
 - Docker em modo rootless (`~/.local/share/docker`, já dentro do `$HOME`) e Podman (`podman system df`).
-- Classificação por magic bytes para arquivos sem extensão.

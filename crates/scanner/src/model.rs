@@ -87,6 +87,9 @@ pub struct ScanResult {
     pub trash_bytes: u64,
     /// Arquivos (não diretórios) dentro da Lixeira, já contados em `Other`.
     pub trash_files: u64,
+    /// Arquivos sem extensão classificados pelo conteúdo (regra 6b), já contados nas categorias.
+    pub sniffed_files: u64,
+    pub sniffed_bytes: u64,
     /// `$HOME` usado na classificação; as ações de limpeza validam contra ele.
     #[serde(skip)]
     pub home: PathBuf,
@@ -201,6 +204,8 @@ mod tests {
             categories: HashMap::new(),
             trash_bytes: 0,
             trash_files: 0,
+            sniffed_files: 0,
+            sniffed_bytes: 0,
             home: PathBuf::new(),
             docker: None,
             docker_bytes: 0,

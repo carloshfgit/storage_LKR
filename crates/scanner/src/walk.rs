@@ -13,6 +13,7 @@ use jwalk::{Parallelism, WalkDirGeneric};
 use crate::classify::Classifier;
 use crate::disk::disk_info;
 use crate::model::{Category, CategoryStats, FileEntry, ScanProgress, ScanResult};
+use crate::sniff::{MIN_SNIFF_BYTES, sniff};
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -31,6 +32,8 @@ pub struct ScanOptions {
     /// Quantos arquivos guardar por categoria na lista dos maiores.
     pub top_n: usize,
     pub threads: usize,
+    /// Lê os magic bytes dos arquivos sem extensão no `$HOME` (regra 6b).
+    pub sniff: bool,
     pub cancel: Arc<AtomicBool>,
 }
 
@@ -45,6 +48,7 @@ impl ScanOptions {
             top_n: 200,
             // stat é limitado por I/O: mais threads que núcleos mantém a fila do SSD cheia.
             threads: threads * 2,
+            sniff: true,
             cancel: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -60,6 +64,8 @@ struct Counted {
     ino: u64,
     nlink: u64,
     in_trash: bool,
+    /// A categoria veio do conteúdo, não do caminho.
+    sniffed: bool,
 }
 
 type Walk = WalkDirGeneric<((), Option<Counted>)>;
@@ -82,6 +88,7 @@ pub fn scan(
 
     let classifier = Arc::new(Classifier::new(&opts.home));
     let walk_classifier = Arc::clone(&classifier);
+    let use_sniff = opts.sniff;
     let walk = Walk::new(&opts.root)
         .skip_hidden(false)
         .follow_links(false)
@@ -102,13 +109,25 @@ pub fn scan(
                     child.read_children = None;
                     continue;
                 }
+                // 6b. Sem extensão no $HOME: o conteúdo decide. A leitura roda aqui, nas
+                // threads do walk, junto com o stat.
+                let by_content = || {
+                    (use_sniff && meta.is_file() && meta.len() >= MIN_SNIFF_BYTES)
+                        .then(|| sniff(&path))
+                        .flatten()
+                };
+                let (category, sniffed) = match walk_classifier.classify_by_path(&path) {
+                    Some(c) => (c, false),
+                    None => by_content().map_or((Category::Other, false), |c| (c, true)),
+                };
                 child.client_state = Some(Counted {
-                    category: walk_classifier.classify(&path),
+                    category,
                     bytes: meta.blocks() * 512,
                     modified: meta.mtime(),
                     ino: meta.ino(),
                     nlink: meta.nlink(),
                     in_trash: walk_classifier.in_trash(&path),
+                    sniffed,
                 });
             }
         });
@@ -144,6 +163,10 @@ pub fn scan(
             continue;
         }
 
+        if c.sniffed {
+            agg.sniffed_files += 1;
+            agg.sniffed_bytes += c.bytes;
+        }
         if c.in_trash {
             agg.trash_bytes += c.bytes;
             agg.trash_files += u64::from(!is_dir);
@@ -164,6 +187,7 @@ pub fn scan(
     let files = agg.files;
     let trash_bytes = agg.trash_bytes;
     let trash_files = agg.trash_files;
+    let (sniffed_files, sniffed_bytes) = (agg.sniffed_files, agg.sniffed_bytes);
     let categories = agg.finish();
     let scanned: u64 = categories.values().map(|c| c.bytes).sum();
 
@@ -173,6 +197,8 @@ pub fn scan(
         categories,
         trash_bytes,
         trash_files,
+        sniffed_files,
+        sniffed_bytes,
         home: opts.home.clone(),
         docker: None,
         docker_bytes: 0,
@@ -200,6 +226,8 @@ struct Aggregator {
     files: u64,
     trash_bytes: u64,
     trash_files: u64,
+    sniffed_files: u64,
+    sniffed_bytes: u64,
     /// Min-heap: o topo é o menor dos N maiores, descartado quando aparece um maior.
     top: [BinaryHeap<Reverse<TopItem>>; Category::COUNT],
 }
@@ -213,6 +241,8 @@ impl Aggregator {
             files: 0,
             trash_bytes: 0,
             trash_files: 0,
+            sniffed_files: 0,
+            sniffed_bytes: 0,
             top: Default::default(),
         }
     }
@@ -387,6 +417,45 @@ mod tests {
         assert!(r.trash_bytes >= 40_000 && r.trash_bytes <= r.categories[&Category::Other].bytes);
         assert!(r.trash_files >= 1 && r.trash_files <= r.categories[&Category::Other].files);
         assert_eq!(r.home, home);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn files_without_extension_are_classified_by_content() {
+        let dir = temp_dir("sniff");
+        fs::create_dir_all(dir.join(".cache")).unwrap();
+        fs::create_dir_all(dir.join("proj/node_modules")).unwrap();
+        let mut jpeg = b"\xFF\xD8\xFF\xE0".to_vec();
+        jpeg.resize(8_192, 0);
+        for p in ["foto", ".cache/foto", "proj/node_modules/foto"] {
+            fs::write(dir.join(p), &jpeg).unwrap();
+        }
+        // Abaixo de MIN_SNIFF_BYTES: nem é lido.
+        fs::write(dir.join("mini"), &jpeg[..1_000]).unwrap();
+
+        let mut opts = ScanOptions::new(&dir);
+        opts.home = dir.clone();
+        let r = scan(&opts, |_| {}).unwrap();
+        let photos: Vec<_> = r.categories[&Category::Photos]
+            .top
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        assert_eq!(photos, [dir.join("foto")]);
+        assert_eq!(r.sniffed_files, 1);
+        assert_eq!(r.sniffed_bytes, r.categories[&Category::Photos].bytes);
+        let other = &r.categories[&Category::Other].top;
+        for p in [".cache/foto", "proj/node_modules/foto", "mini"] {
+            assert!(other.iter().any(|f| f.path == dir.join(p)), "{p}");
+        }
+
+        // Desligado: tudo fica em Outros, e o total escaneado não muda.
+        opts.sniff = false;
+        let off = scan(&opts, |_| {}).unwrap();
+        assert_eq!(off.categories[&Category::Photos].files, 0);
+        assert_eq!(off.sniffed_files, 0);
+        assert_eq!(off.scanned_bytes(), r.scanned_bytes());
 
         fs::remove_dir_all(&dir).unwrap();
     }

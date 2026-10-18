@@ -5,6 +5,7 @@ mod classify;
 mod disk;
 mod docker;
 mod model;
+mod sniff;
 mod walk;
 
 pub use classify::Classifier;

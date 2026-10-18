@@ -56,26 +56,34 @@ impl Classifier {
         }
     }
 
-    /// Regras em ordem; a primeira que casar vence (ARCHITECTURE §5).
+    /// Regras em ordem; a primeira que casar vence (ARCHITECTURE §5). Arquivo visível no
+    /// `$HOME` sem extensão vai para Outros; o walk usa [`Classifier::classify_by_path`]
+    /// para olhar o conteúdo antes.
     pub fn classify(&self, path: &Path) -> Category {
+        self.classify_by_path(path).unwrap_or(Category::Other)
+    }
+
+    /// Como [`Classifier::classify`], mas devolve `None` quando só o conteúdo pode decidir:
+    /// arquivo visível no `$HOME`, fora de build/dev e sem extensão (regra 6b). Pura, sem I/O.
+    pub fn classify_by_path(&self, path: &Path) -> Option<Category> {
         // 1. Sistema e apps gerenciados.
         if self.is_app_path(path) {
-            return Category::AppsSystem;
+            return Some(Category::AppsSystem);
         }
         let Some(rel) = self.home.as_ref().and_then(|h| path.strip_prefix(h).ok()) else {
             // 8. Fora do $HOME.
-            return Category::AppsSystem;
+            return Some(Category::AppsSystem);
         };
         // 2. Lixeira: vem antes dos apps portáteis para `trash_bytes` caber em Outros.
         if self.in_trash(path) {
-            return Category::Other;
+            return Some(Category::Other);
         }
         // 3. AppImage em qualquer lugar do $HOME.
         if path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("appimage"))
         {
-            return Category::AppsSystem;
+            return Some(Category::AppsSystem);
         }
 
         // Uma passada pelos componentes decide as regras 3 a 5. App portátil vence
@@ -90,7 +98,7 @@ impl Classifier {
                 || (prev == b"resources"
                     && matches!(name, b"app" | b"app.asar" | b"app.asar.unpacked"))
             {
-                return Category::AppsSystem;
+                return Some(Category::AppsSystem);
             }
             hidden |= name.first() == Some(&b'.');
             dev |= is_dev_component(prev, name);
@@ -98,10 +106,14 @@ impl Classifier {
         }
         // 4 e 5. Caches e ocultos, depois artefatos de build/dev.
         if hidden || dev {
-            return Category::Other;
+            return Some(Category::Other);
         }
-        // 6 e 7. Arquivo visível no $HOME: decide pela extensão.
-        by_extension(path).unwrap_or(Category::Other)
+        // 6 e 7. Arquivo visível no $HOME: decide pela extensão. Sem extensão (ou terminado
+        // em `.`), fica para o conteúdo (6b).
+        if path.extension().is_none_or(|e| e.is_empty()) {
+            return None;
+        }
+        Some(by_extension(path).unwrap_or(Category::Other))
     }
 
     /// Caminho de sistema ou de app gerenciado (regra 1). Também usado para recusar ações
@@ -366,6 +378,34 @@ mod tests {
     fn unknown_or_missing_extension_is_other() {
         assert_eq!(cat("/home/u/Makefile"), Category::Other);
         assert_eq!(cat("/home/u/arquivo.extensaolonga"), Category::Other);
+    }
+
+    #[test]
+    fn only_visible_home_files_without_extension_go_to_content() {
+        let c = classifier();
+        let by_path = |p: &str| c.classify_by_path(Path::new(p));
+        // 6b: só o conteúdo decide.
+        assert_eq!(by_path("/home/u/Downloads/foto"), None);
+        assert_eq!(by_path("/home/u/Makefile"), None);
+        assert_eq!(by_path("/home/u/terminado."), None);
+        // Decididos pelo caminho ou pela extensão, mesmo desconhecida: sem leitura.
+        assert_eq!(by_path("/home/u/a.xyz"), Some(Category::Other));
+        assert_eq!(by_path("/home/u/.cache/foto"), Some(Category::Other));
+        assert_eq!(
+            by_path("/home/u/proj/node_modules/x"),
+            Some(Category::Other)
+        );
+        assert_eq!(
+            by_path("/home/u/.local/share/Trash/files/foto"),
+            Some(Category::Other)
+        );
+        assert_eq!(by_path("/home/u/snap/app/foto"), Some(Category::AppsSystem));
+        assert_eq!(
+            by_path("/home/u/bin/ferramenta"),
+            Some(Category::AppsSystem)
+        );
+        assert_eq!(by_path("/usr/bin/ls"), Some(Category::AppsSystem));
+        assert_eq!(by_path("/var/log/syslog"), Some(Category::AppsSystem));
     }
 
     #[test]

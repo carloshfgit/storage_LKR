@@ -50,6 +50,9 @@ export interface ScanResult {
   categories: Record<Category, CategoryStats>;
   trash_bytes: number;
   trash_files: number;
+  /** Arquivos sem extensão classificados pelo conteúdo, já contados nas categorias. */
+  sniffed_files: number;
+  sniffed_bytes: number;
   docker: DockerUsage | null;
   docker_bytes: number;
   unaccounted_bytes: number;

@@ -66,6 +66,7 @@ cargo build --release -p scanner --bin scan
 target/release/scan                  # escaneia / (Docker incluso, ~7 s no total)
 target/release/scan / --no-docker    # só o walk (~2,2 s com cache quente)
 target/release/scan ~ --top 5        # $HOME, com os 5 maiores por categoria
+target/release/scan / --no-sniff     # sem ler o conteúdo dos arquivos sem extensão
 target/release/scan / --threads 4    # muda o número de threads (padrão: 2× núcleos)
 ```
 

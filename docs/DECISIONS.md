@@ -20,7 +20,7 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D10](#d10) | Só os 200 maiores arquivos por categoria vão para a UI | ✅ | 1 |
 | [D11](#d11) | 8 threads (2× núcleos) | ✅ | 1 |
 | [D12](#d12) | Classificar primeiro pelo caminho, depois pela extensão | ✅ | 2 |
-| [D13](#d13) | Sem leitura de conteúdo (magic bytes) | ✅ | 2 |
+| [D13](#d13) | Sem leitura de conteúdo (magic bytes) — substituída em parte pela D37 | ✅ | 2 |
 | [D14](#d14) | Lixeira contada à parte | ✅ | 2 |
 | [D15](#d15) | Docker via `docker system df` | ✅ | 2 |
 | [D16](#d16) | Docker não bloqueia o scan | ✅ | 2–3 |
@@ -44,6 +44,7 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D34](#d34) | Ações devolvem o resultado atualizado; liberado medido pelo `statvfs` | ✅ | 6 |
 | [D35](#d35) | Abrir com o último scan e atualizar em segundo plano | ✅ | 7 |
 | [D36](#d36) | Nome "Storage Looker" e pacote só `.deb` | ✅ | 7 |
+| [D37](#d37) | Magic bytes só para arquivos sem extensão no `$HOME` | ✅ | 8 |
 
 ---
 
@@ -187,6 +188,8 @@ O inode sozinho basta como chave porque D07 garante um único filesystem.
 **Decisão:** a classificação usa só caminho e extensão; nenhum arquivo é aberto.
 
 **Por quê:** ler os magic bytes custaria `open` + `read` em 1 milhão de arquivos e mataria o requisito de velocidade. Arquivos sem extensão vão para Outros.
+
+**Atualização (Etapa 8):** continua valendo para quase todos os arquivos. A exceção são os arquivos sem extensão no `$HOME` (D37).
 
 ### D21 — Regras de apps portáteis e de build/dev <a id="d21"></a>
 **Problema (era uma limitação):** o Antigravity IDE descompactado em `~/Área de trabalho/` e as pastas `node_modules` em lugares visíveis tinham seus `.png`, `.mp3` e `.md` contados como Fotos, Áudio e Documentos.
@@ -431,3 +434,21 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 
 **Por quê:** o nome com espaço fica só no que o usuário vê; arquivos e pacotes ficam sem espaço. Os outros formatos (AppImage, RPM) não são o alvo do MVP. O AppImage, em particular, baixa ferramentas extras durante o build.
 
+---
+
+## Pós-MVP
+
+### D37 — Magic bytes só para arquivos sem extensão no `$HOME` <a id="d37"></a>
+**Decisão:** o conteúdo só é lido quando o caminho já decidiu tudo menos a categoria final: arquivo regular, visível, dentro do `$HOME`, fora de build/dev, **sem extensão** e com pelo menos 4 KiB (regra 6b). São no máximo 32 bytes, comparados com uma tabela própria (`sniff.rs`). Sem assinatura conhecida, o arquivo fica em Outros, como antes.
+
+**Por quê:**
+- D13 continua certa para o milhão de arquivos de `/`. Nesta máquina só 1.068 arquivos chegam à regra 7 sem extensão, e só 417 deles têm 4 KiB ou mais. O walk de `/` ficou igual, dentro do ruído (2,24–2,42 s contra 2,10–2,62 s).
+- Extensão desconhecida (`.xyz`) não é lida: quem pôs uma extensão quis dizer algo, e lê-las multiplicaria as leituras.
+- Abaixo de 4 KiB, praticamente nada é mídia: são configs, scripts e marcadores. E o `open` custa o mesmo para 100 B e para 1 GB.
+- `classify_by_path` devolve `Option`, para a regra ficar no classificador (puro e testável) e o I/O ficar no walk. Uma função só, em vez de um `needs_sniff` separado, evita repetir a passada pelos componentes do caminho.
+- `O_NOATIME`: analisar o disco não deve mudar o horário de acesso dos arquivos. O kernel só aceita a flag para o dono, e para os outros a leitura segue sem ela.
+
+**Descartado:**
+- Crate `infer`: cobre centenas de formatos de que não precisamos e traz mais uma dependência para cerca de 20 assinaturas.
+- Ler arquivos ZIP para distinguir docx/odt/epub: exigiria ler o diretório central, que fica no fim do arquivo. Isso é caro, e documentos de escritório quase sempre têm extensão.
+- Reclassificar MPEG-TS (`0x47` a cada 188 bytes): é raro no desktop e fácil de confundir (D22).

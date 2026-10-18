@@ -206,26 +206,35 @@ Total + restante = `df` por construção. O restante (106 GB) é real: são dire
 
 ## Etapa 8 — Classificação por magic bytes (backlog 5)
 Hoje um arquivo visível no `$HOME` sem extensão cai em Outros (regra 7). D13 descartou ler conteúdo porque custaria um `open` + `read` por arquivo. Aqui a leitura vale **só** para quem chegaria à regra 7 sem extensão, e o custo é medido.
-- [ ] Medir antes: quantos arquivos do `$HOME` chegam à regra 7 sem extensão (contador temporário no `bin/scan`). Se forem poucos milhares, seguir.
-- [ ] `classify.rs`: `classify` continua pura. Um novo `Classifier::needs_sniff(path)` diz se o caminho cairia na regra 7 **sem extensão**: dentro do `$HOME`, visível e fora de build/dev. Arquivos com extensão desconhecida ficam fora.
-- [ ] Novo `sniff.rs`: `sniff(path) -> Option<Category>` lê no máximo 32 bytes e compara com uma tabela estática de assinaturas, sem crate novo:
+- [x] Medir antes quantos arquivos do `$HOME` chegam à regra 7 sem extensão. Se forem poucos milhares, seguir.
+- [x] `classify.rs`: `classify` continua pura. `Classifier::classify_by_path(path)` devolve `None` quando o caminho cairia na regra 7 **sem extensão**: dentro do `$HOME`, visível e fora de build/dev. Arquivos com extensão desconhecida ficam fora. Na implementação, virou uma função só, em vez de um `needs_sniff` à parte, para não repetir a passada pelos componentes.
+- [x] Novo `sniff.rs`: `sniff(path) -> Option<Category>` lê no máximo 32 bytes e compara com uma tabela estática de assinaturas, sem crate novo:
   - Fotos: JPEG `FF D8 FF`, PNG, GIF, WebP (`RIFF…WEBP`), HEIC/AVIF (`ftyp heic|heix|avif`)
   - Vídeos: MP4/MOV (`ftyp isom|mp42|qt  `…), Matroska/WebM `1A 45 DF A3`, AVI (`RIFF…AVI `)
   - Áudio: `ID3`/MPEG frame, `fLaC`, `OggS`, WAV (`RIFF…WAVE`), M4A (`ftyp M4A `)
   - Documentos: `%PDF`
   - ZIP (docx/odt), ELF, scripts e afins: `None`, ou seja, continua em Outros
-- [ ] Ignorar arquivos menores que 4 KiB, que são raramente mídia e caros proporcionalmente. Erro de leitura (`EACCES`) também vira `None`, sem contar como dir negado.
-- [ ] `walk.rs`: em `process_read_dir`, se a categoria é Outros e `needs_sniff`, chamar `sniff`. A leitura roda nas threads do rayon, junto com o `symlink_metadata`.
-- [ ] `bin/scan`: `--no-sniff` para comparar, e uma linha "reclassificados por conteúdo: N arquivos, X GB".
-- [ ] Testes:
+- [x] Ignorar arquivos menores que 4 KiB, que são raramente mídia e caros proporcionalmente. Erro de leitura (`EACCES`) também vira `None`, sem contar como dir negado.
+- [x] `walk.rs`: em `process_read_dir`, quando `classify_by_path` devolve `None` e a entrada é um arquivo regular, chamar `sniff`. A leitura roda nas threads do rayon, junto com o `symlink_metadata`.
+- [x] `bin/scan`: `--no-sniff` para comparar, e uma linha "reclassificados por conteúdo: N arquivos, X GB".
+- [x] Testes:
   - `sniff` com cabeçalhos sintéticos de cada assinatura, arquivo curto, vazio e sem permissão;
   - walk numa pasta temporária: `~/foto` (JPEG sem extensão) vai para Fotos, `~/.cache/foto` continua em Outros e `~/proj/node_modules/x` continua em Outros.
-- [ ] Docs: ARCHITECTURE §5 (nova regra 6b e o "não há leitura de conteúdo" reescrito); DECISIONS D37, que atualiza D13 (por que só sem extensão, limite de 4 KiB, tabela própria em vez do crate `infer`).
+- [x] Docs: ARCHITECTURE §5 (nova regra 6b e o "não há leitura de conteúdo" reescrito); DECISIONS D37, que atualiza D13 (por que só sem extensão, limite de 4 KiB, tabela própria em vez do crate `infer`).
 
 **Pronto quando:**
 - Uma foto renomeada sem extensão no `$HOME` aparece em Fotos.
 - O walk de `/` com cache quente continua **< 5 s**, com no máximo +10% em relação ao `--no-sniff`.
 - `du`/`df` continuam batendo, porque só a categoria muda, não os bytes.
+
+**Resultado (17/10/2026):**
+- Medido antes: 1.068 arquivos visíveis no `$HOME` sem extensão (5,46 GB), dos quais 417 com 4 KiB ou mais. Vários estão em `target/`, que a regra 5 já tira. São poucas leituras.
+- `ScanResult` ganhou `sniffed_files` e `sniffed_bytes`, e o `cache::VERSION` foi para 2. A abertura seguinte não usa o cache antigo.
+- A leitura usa `O_NOATIME`, para não mudar o horário de acesso dos arquivos (sem ela quando o kernel recusa por não ser o dono).
+- Walk de `/` (release, cache quente, 3 rodadas): 2,24 / 2,27 / 2,42 s com leitura e 2,10 / 2,15 / 2,62 s com `--no-sniff`. A diferença fica dentro do ruído.
+- Nesta máquina, nenhum arquivo foi reclassificado: os que não têm extensão são binários, scripts e afins.
+- Prova real: um JPEG de `/usr/share/backgrounds` copiado como `~/teste-sniff-slkr/foto-sem-extensao` apareceu em Fotos. O total escaneado do `$HOME` ficou a 12 KB do `du -sxB1 ~`, porque arquivos mudam entre as duas leituras.
+- Workspace: 54 testes passam (5 novos), clippy limpo, `npm run check` sem erros.
 
 ---
 
@@ -331,6 +340,6 @@ Hoje o app só escaneia `/` e não cruza filesystems (D07). Com `/home` numa par
 2. Cards de sugestão: "Downloads antigos", "Caches", "10 maiores arquivos". → **Etapa 10**
 3. Atualização incremental (inotify ou fanotify).
 4. Modo privilegiado via `pkexec` para escanear o que hoje é "sem acesso".
-5. Detecção por magic bytes para arquivos sem extensão. → **Etapa 8**
+5. Detecção por magic bytes para arquivos sem extensão. → **Etapa 8** ✅
 6. Suporte a múltiplos discos e partições (seletor no header). → **Etapa 11**
 7. Docker rootless. → **Etapa 9**

@@ -1,6 +1,6 @@
 //! CLI de benchmark/validação do motor.
 //!
-//! Uso: `scan [CAMINHO] [--top N] [--threads N] [--no-docker]`   (padrão: `/`)
+//! Uso: `scan [CAMINHO] [--top N] [--threads N] [--no-docker] [--no-sniff]`   (padrão: `/`)
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -12,6 +12,7 @@ fn main() -> ExitCode {
     let mut show_top = 0usize;
     let mut threads = None;
     let mut with_docker = true;
+    let mut sniff = true;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -19,8 +20,9 @@ fn main() -> ExitCode {
             "--top" => show_top = args.next().and_then(|v| v.parse().ok()).unwrap_or(5),
             "--threads" => threads = args.next().and_then(|v| v.parse().ok()),
             "--no-docker" => with_docker = false,
+            "--no-sniff" => sniff = false,
             "-h" | "--help" => {
-                eprintln!("uso: scan [CAMINHO] [--top N] [--threads N] [--no-docker]");
+                eprintln!("uso: scan [CAMINHO] [--top N] [--threads N] [--no-docker] [--no-sniff]");
                 return ExitCode::SUCCESS;
             }
             _ => root = PathBuf::from(arg),
@@ -28,6 +30,7 @@ fn main() -> ExitCode {
     }
 
     let mut opts = ScanOptions::new(&root);
+    opts.sniff = sniff;
     if let Some(t) = threads {
         opts.threads = t;
     }
@@ -108,6 +111,13 @@ fn main() -> ExitCode {
         disk.used_bytes()
     );
     println!("dirs negados:   {}", result.denied_dirs);
+    if opts.sniff {
+        println!(
+            "por conteúdo:   {} arquivos sem extensão reclassificados ({})",
+            result.sniffed_files,
+            gb(result.sniffed_bytes)
+        );
+    }
     if let Some(d) = &result.docker {
         println!(
             "docker:         {} (imagens {}, containers {}, volumes {}, build cache {}; liberável {})",
