@@ -204,11 +204,133 @@ Total + restante = `df` por construção. O restante (106 GB) é real: são dire
 
 ---
 
+## Etapa 8 — Classificação por magic bytes (backlog 5)
+Hoje um arquivo visível no `$HOME` sem extensão cai em Outros (regra 7). D13 descartou ler conteúdo porque custaria um `open` + `read` por arquivo. Aqui a leitura vale **só** para quem chegaria à regra 7 sem extensão, e o custo é medido.
+- [ ] Medir antes: quantos arquivos do `$HOME` chegam à regra 7 sem extensão (contador temporário no `bin/scan`). Se forem poucos milhares, seguir.
+- [ ] `classify.rs`: `classify` continua pura. Um novo `Classifier::needs_sniff(path)` diz se o caminho cairia na regra 7 **sem extensão**: dentro do `$HOME`, visível e fora de build/dev. Arquivos com extensão desconhecida ficam fora.
+- [ ] Novo `sniff.rs`: `sniff(path) -> Option<Category>` lê no máximo 32 bytes e compara com uma tabela estática de assinaturas, sem crate novo:
+  - Fotos: JPEG `FF D8 FF`, PNG, GIF, WebP (`RIFF…WEBP`), HEIC/AVIF (`ftyp heic|heix|avif`)
+  - Vídeos: MP4/MOV (`ftyp isom|mp42|qt  `…), Matroska/WebM `1A 45 DF A3`, AVI (`RIFF…AVI `)
+  - Áudio: `ID3`/MPEG frame, `fLaC`, `OggS`, WAV (`RIFF…WAVE`), M4A (`ftyp M4A `)
+  - Documentos: `%PDF`
+  - ZIP (docx/odt), ELF, scripts e afins: `None`, ou seja, continua em Outros
+- [ ] Ignorar arquivos menores que 4 KiB, que são raramente mídia e caros proporcionalmente. Erro de leitura (`EACCES`) também vira `None`, sem contar como dir negado.
+- [ ] `walk.rs`: em `process_read_dir`, se a categoria é Outros e `needs_sniff`, chamar `sniff`. A leitura roda nas threads do rayon, junto com o `symlink_metadata`.
+- [ ] `bin/scan`: `--no-sniff` para comparar, e uma linha "reclassificados por conteúdo: N arquivos, X GB".
+- [ ] Testes:
+  - `sniff` com cabeçalhos sintéticos de cada assinatura, arquivo curto, vazio e sem permissão;
+  - walk numa pasta temporária: `~/foto` (JPEG sem extensão) vai para Fotos, `~/.cache/foto` continua em Outros e `~/proj/node_modules/x` continua em Outros.
+- [ ] Docs: ARCHITECTURE §5 (nova regra 6b e o "não há leitura de conteúdo" reescrito); DECISIONS D37, que atualiza D13 (por que só sem extensão, limite de 4 KiB, tabela própria em vez do crate `infer`).
+
+**Pronto quando:**
+- Uma foto renomeada sem extensão no `$HOME` aparece em Fotos.
+- O walk de `/` com cache quente continua **< 5 s**, com no máximo +10% em relação ao `--no-sniff`.
+- `du`/`df` continuam batendo, porque só a categoria muda, não os bytes.
+
+---
+
+## Etapa 9 — Docker rootless (backlog 7)
+No modo rootless, os dados ficam em `~/.local/share/docker`, dentro do `$HOME`. Hoje o walk os conta como **Outros** (regra 4, pasta oculta) e os arquivos poderiam aparecer como "podem ir para a Lixeira". Parte da árvore pertence a subuids mapeados, e o walk não consegue ler. Esse pedaço cai no "sem acesso", enquanto o `docker system df` (do contexto padrão) não informa nada sobre ele.
+- [ ] `classify.rs`: `~/.local/share/docker` (e `~/.local/share/containers`, do Podman) entram na **regra 1**: Apps/Sistema, `is_app_path` verdadeiro e nunca vão para a Lixeira. Teste junto com os casos da Etapa 2.
+- [ ] `walk.rs`: somar à parte os bytes lidos sob esse prefixo (`rootless_scanned_bytes`). Eles continuam dentro de Apps/Sistema, mas o detalhe passa a mostrá-los como Docker.
+- [ ] `docker.rs`: descobrir os daemons acessíveis sem root:
+  - rootful pelo socket padrão;
+  - rootless por `unix://$XDG_RUNTIME_DIR/docker.sock`, quando existir, via `docker --host … system df` com host fixo montado no Rust, nunca vindo da UI.
+  - `docker_usage` passa a devolver `DockerUsage` com `rootful: Option<…>` e `rootless: Option<…>`, ou uma lista com o modo de cada um. Os dois são consultados em paralelo e cada um tem seu timeout.
+- [ ] `model.rs::apply_docker`:
+  - o rootful continua descontado do restante (limitado a ele);
+  - do rootless, só a parte **não lida** pelo walk (`total − rootless_scanned_bytes`) sai do restante, também limitada, para não contar duas vezes;
+  - a barra continua em 100%. Atualizar os testes de `apply_docker`/`set_disk`.
+- [ ] `docker_prune`: `DockerTarget` ganha o modo (`rootful`/`rootless`) e os argumentos continuam fixos (`--host` montado no Rust). Volumes continuam sem botão (D18).
+- [ ] UI: o card Docker mostra uma seção por daemon ("Docker" e "Docker rootless"), cada uma com os seus botões. Sem nenhum daemon, o card some, como hoje.
+- [ ] `cache::VERSION` incrementado, porque o formato de `DockerUsage` muda. `api.ts` espelha os tipos novos.
+- [ ] Testes com Docker falso: só rootful, só rootless, os dois juntos, e rootless com parte já lida pelo walk (sem contar duas vezes). Um arquivo sob `~/.local/share/docker` é recusado pelo `move_to_trash`.
+- [ ] Docs: ARCHITECTURE §5 (regra 1) e §6.1; DECISIONS D38 (por que socket fixo e não `docker context`, e a regra de não contar duas vezes).
+
+**Pronto quando:**
+- Com Docker rootless instalado (`dockerd-rootless-setuptool.sh install`), o card mostra o uso rootless, `~/.local/share/docker` não aparece mais em Outros e scan + Docker + sem acesso continua = `df`.
+- Sem rootless, nada muda em relação à Etapa 7.
+
+---
+
+## Etapa 10 — Cards de sugestão (backlog 2)
+A tela principal ganha, abaixo da legenda, cards com o que dá para limpar com segurança: "Downloads antigos", "Caches" e "10 maiores arquivos".
+- [ ] **Pasta de Downloads localizada:** ler `XDG_DOWNLOAD_DIR` de `~/.config/user-dirs.dirs` (`~/Downloads`, `~/Transferências`…), com fallback para `~/Downloads`. Fica no `Classifier`/`ScanOptions`, sem I/O no walk.
+- [ ] `walk.rs` agrega, sem mudar as categorias:
+  - **Downloads antigos:** arquivos sob a pasta de Downloads com mtime há mais de 90 dias (`OLD_DOWNLOAD_DAYS`, relativo ao início do scan). Bytes, contagem e top-N próprio (heap como o das categorias).
+  - **Caches:** bytes por subpasta de primeiro nível de `~/.cache` (`~/.cache/mozilla`, `~/.cache/pip`…), mais `~/.cache/thumbnails`. Só as 20 maiores vão para o resultado.
+- [ ] `model.rs`: `ScanResult.suggestions: Suggestions { old_downloads: CategoryStats, caches: Vec<DirEntry { path, bytes }> }`. Incrementar `cache::VERSION`.
+- [ ] `record_trashed`/`find_file` passam a olhar também `old_downloads.top`, para o arquivo sair dos dois lugares e a barra continuar certa. `clear_trash` não precisa mudar.
+- [ ] **Ações:**
+  - Downloads antigos: mesma `move_to_trash`. `contains_file`/`check_trashable` aceitam os arquivos de `old_downloads.top`, com a mesma validação (D33).
+  - Caches: novo command `trash_cache_dir(path)`. Só aceita um `path` que esteja em `suggestions.caches`, com canônico igual e **filho direto** de `~/.cache`. Move a pasta inteira para a Lixeira (D17: nada de `rm`). Atualiza o resultado: tira os bytes de Outros e soma em `trash_bytes`.
+  - 10 maiores: novo command `largest_files(n)`, com `n ≤ 50`, que une os top-N de todas as categorias e devolve `FileItem` com `trashable`, reaproveitando `category_files`.
+  - Seguir os 4 passos de "Adicionar um command" do CLAUDE.md para cada command novo, mais os wrappers em `api.ts`.
+- [ ] **UI:**
+  - `SuggestionCard.svelte`: título, tamanho total e um resumo ("37 arquivos com mais de 90 dias").
+  - Clicar abre uma lista no estilo do `CategoryDetail`, reaproveitando `FileRow`, a seleção múltipla e o rodapé "Mover para a Lixeira". Para os caches, cada linha é uma pasta com o botão "Mover para a Lixeira", que pede confirmação no `ConfirmDialog`.
+  - Card sem nada a sugerir não aparece.
+- [ ] Testes:
+  - walk numa pasta temporária com mtimes ajustados (`filetime` só em dev-deps, ou `utimensat` via `rustix`): Downloads antigos conta só os velhos;
+  - caches agregados por subpasta;
+  - `trash_cache_dir` recusa `~/.cache` em si, um neto, um caminho fora da lista e um link simbólico trocado depois do scan;
+  - `record_trashed` de um arquivo antigo de Downloads atualiza categoria e sugestão.
+- [ ] Docs: ARCHITECTURE §3, §4, §7 e §8; DECISIONS D39 (90 dias, caches por subpasta movidos para a Lixeira em vez de apagados, "10 maiores" calculado dos top-N já existentes).
+
+**Pronto quando:**
+- Os três cards aparecem com valores que conferem com `find ~/Downloads -mtime +90 -type f` e `du -sB1 ~/.cache/*`.
+- Mover um cache para a Lixeira faz ele aparecer no Nautilus (restaurável) e o card "Lixeira" crescer no mesmo valor.
+- Walk de `/` continua < 5 s.
+
+---
+
+## Etapa 11 — Múltiplos discos e partições (backlog 6)
+Hoje o app só escaneia `/` e não cruza filesystems (D07). Com `/home` numa partição separada, o `$HOME` inteiro fica de fora. HDs internos e pendrives também nunca aparecem.
+- [ ] `disk.rs`: `list_disks() -> Vec<DiskInfo>` a partir de `/proc/self/mounts`:
+  - só filesystems de dados (ext2/3/4, btrfs, xfs, f2fs, vfat, exfat, ntfs3, fuseblk);
+  - fora `squashfs`/loop (snaps), `tmpfs`, `/boot` e `/boot/efi`;
+  - o mesmo dispositivo montado em dois lugares (subvolumes btrfs, bind mounts) aparece uma vez;
+  - `DiskInfo` ganha `label` (do `/dev/disk/by-label`, ou o nome do mount) e `removable` (`/sys/block/*/removable`).
+- [ ] `classify.rs`: `Classifier::new(home, data_root)`. Num disco que não é o do sistema nem o do `$HOME`, `data_root` = ponto de montagem, e as regras 4–7 valem relativas a ele (pasta oculta = Outros, extensão = mídia). A regra 8 ("fora do `$HOME` = Apps/Sistema") vale só no disco do sistema. `.Trash-<uid>` na raiz do mount conta como Lixeira (regra 2).
+- [ ] `walk.rs`: nada muda no walk em si; `ScanOptions.root` passa a ser o mount escolhido.
+- [ ] **Docker:** aplicado só ao disco que contém a raiz de dados de cada daemon (`docker info --format '{{.DockerRootDir}}'`, ou `/var/lib/docker` e `~/.local/share/docker` da Etapa 9). Nos outros discos, `apply_docker(None)`.
+- [ ] **Estado e cache:**
+  - `AppState` guarda o último resultado **por mount** (`HashMap<PathBuf, ScanResult>`), e um scan por vez;
+  - `generation` continua valendo para o Docker;
+  - cache em `~/.cache/storage-lkr/disks/<hash-do-mount>.json` (o `last.json` atual é migrado ou ignorado), mais `selected` com o último disco escolhido;
+  - incrementar `cache::VERSION`.
+- [ ] **Commands:**
+  - `list_disks`;
+  - `disk_info(mount)`, `start_scan(mount, on_event)`, `last_scan(mount)` e `category_files(mount, cat)`;
+  - as ações de limpeza recebem `mount`, mas o Rust só aceita um mount que esteja em `list_disks()` e só age sobre o resultado **daquele** mount.
+  - Atualizar `build.rs`, capabilities e `api.ts`.
+- [ ] **Validação (`check_trashable`):** sob o `$HOME` canônico **ou**, num disco de dados, sob o mount e com dono = uid atual. As demais regras de D33 continuam. O crate `trash` já move para `$topdir/.Trash-$uid` em outro filesystem; testar isso. `empty_trash` já lista todas as lixeiras do usuário.
+- [ ] **UI:**
+  - seletor no header (`<select>` ou menu) com nome, tamanho e ícone de removível;
+  - trocar de disco mostra o resultado em cache daquele disco na hora e reescaneia em segundo plano (D35);
+  - os cards de sugestão (Etapa 10) só aparecem no disco que contém o `$HOME`;
+  - disco removido durante o scan → `error` com mensagem clara, e o seletor recarrega.
+- [ ] `bin/scan`: já aceita uma raiz. Adicionar `--list-disks`.
+- [ ] Testes:
+  - parser de `/proc/self/mounts` com uma amostra fixa (snap, tmpfs, btrfs duplicado, `/home` separado, pendrive vfat com espaço no nome);
+  - classificação com `data_root` (`/media/u/HD/Fotos/a.jpg` vai para Fotos, `/media/u/HD/.Trash-1000/files/x` para a Lixeira);
+  - estado com dois mounts: resultados e Docker não se misturam, e uma ação num mount fora da lista é recusada.
+- [ ] Docs: ARCHITECTURE §1, §4, §5, §6, §7, §8 e §9; DECISIONS D40 (um disco por vez em vez de somar todos, por que `data_root`, e a regra de dono nos discos externos), que atualiza D09.
+
+**Pronto quando:**
+- O seletor lista `/`, um `/home` separado (se houver) e um pendrive conectado.
+- Para cada disco, scan + (Docker) + sem acesso = `df -B1 <mount>`.
+- Uma foto num pendrive aparece em Fotos, vai para a Lixeira e pode ser restaurada pelo Nautilus.
+- Esvaziar a Lixeira libera o espaço no pendrive.
+- Trocar de disco é instantâneo com cache.
+
+---
+
 ## Backlog (pós-MVP)
 1. Detalhar Apps por Snap, Flatpak e APT, com tamanho por app.
-2. Cards de sugestão: "Downloads antigos", "Caches", "10 maiores arquivos".
+2. Cards de sugestão: "Downloads antigos", "Caches", "10 maiores arquivos". → **Etapa 10**
 3. Atualização incremental (inotify ou fanotify).
 4. Modo privilegiado via `pkexec` para escanear o que hoje é "sem acesso".
-5. Detecção por magic bytes para arquivos sem extensão.
-6. Suporte a múltiplos discos e partições (seletor no header).
-7. Docker rootless e Podman (`podman system df`).
+5. Detecção por magic bytes para arquivos sem extensão. → **Etapa 8**
+6. Suporte a múltiplos discos e partições (seletor no header). → **Etapa 11**
+7. Docker rootless. → **Etapa 9**
