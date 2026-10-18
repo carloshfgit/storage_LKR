@@ -48,3 +48,11 @@ O passo a passo completo, com pré-requisitos, a CLI de benchmark, o build do `.
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | Como o motor, a ponte e a interface funcionam |
 | [DECISIONS](docs/DECISIONS.md) | Cada decisão, com o porquê e o que foi descartado |
 | [STACK_CHOICE](docs/STACK_CHOICE.md) | Por que Rust + Tauri + Svelte |
+
+## Autor
+
+Desenvolvido por **Carlos Costa** ([@carloshfgit](https://github.com/carloshfgit)).
+
+## Licença
+
+Este projeto está sob a licença MIT. Consulte o arquivo [LICENSE](LICENSE) para obter mais informações.

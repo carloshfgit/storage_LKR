@@ -2,7 +2,8 @@
 name = "storage-looker"
 version = "1.0.0"
 description = "Storage Looker: gerenciador de armazenamento para Ubuntu"
-authors = ["carloshfgit"]
+authors = ["Carlos Costa"]
+license = "MIT"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

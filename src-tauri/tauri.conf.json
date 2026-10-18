@@ -42,6 +42,8 @@
       "icons/icon.ico"
     ],
     "category": "Utility",
+    "copyright": "Copyright © 2026 Carlos Costa",
+    "license": "MIT",
     "shortDescription": "Veja o que ocupa o disco e libere espaço com segurança",
     "longDescription": "Barra de armazenamento no estilo iOS/Android para o Ubuntu: fotos, vídeos, áudio, documentos, apps/sistema e outros, com a Lixeira e o Docker. Nada é apagado direto: os arquivos vão para a Lixeira."
   },

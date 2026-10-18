@@ -1,6 +1,8 @@
 [package]
 name = "scanner"
 version = "1.0.0"
+authors = ["Carlos Costa"]
+license = "MIT"
 edition = "2024"
 
 [dependencies]

@@ -1,7 +1,8 @@
 {
   "name": "storage-looker",
   "version": "1.0.0",
-  "description": "",
+  "description": "Gerenciador de armazenamento para Ubuntu no estilo iOS",
+  "author": "Carlos Costa (https://github.com/carloshfgit)",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
