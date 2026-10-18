@@ -16,7 +16,19 @@ Gerenciador de armazenamento para Ubuntu no estilo iOS. Com uma barra horizontal
 
 Motor em **Rust** (`jwalk`, `statvfs`), janela **Tauri v2** e interface **SvelteKit (Svelte 5) + TypeScript** com CSS puro. A justificativa está em [STACK_CHOICE](docs/STACK_CHOICE.md).
 
-## Começando
+## Instalação (Ubuntu / Debian)
+
+Baixe o pacote `.deb` da versão mais recente na página de [Releases](https://github.com/carloshfgit/storage_LKR/releases/latest) e instale via terminal:
+
+```bash
+sudo apt install ./"Storage Looker_1.0.0_amd64.deb"
+```
+
+Ou clique duas vezes no arquivo baixado para instalar pela Central de Aplicativos do Ubuntu.
+
+## Desenvolvimento
+
+Para rodar localmente ou compilar a partir do código-fonte:
 
 ```bash
 npm install
