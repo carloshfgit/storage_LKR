@@ -47,6 +47,7 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D37](#d37) | Magic bytes só para arquivos sem extensão no `$HOME` | ✅ | 8 |
 | [D38](#d38) | Docker rootless: socket fixo por daemon, sem contar duas vezes | ✅ | 9 |
 | [D39](#d39) | Sugestões no walk; caches inteiros para a Lixeira | ✅ | 10 |
+| [D41](#d41) | Lixeira com card próprio; itens pelo `id` do sistema | ✅ | 12 |
 
 ---
 
@@ -499,3 +500,28 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 **Limitações:**
 - Um AppImage dentro de `~/.cache` é contado em Apps/Sistema (regra 3). Ao mover o item inteiro, os bytes dele entram em `trash_bytes`, mas não saem de Apps/Sistema até o próximo scan.
 - O cache em `$XDG_CACHE_HOME`, fora de `~/.cache`, não é considerado.
+
+### D41 — Lixeira com card próprio; itens pelo `id` do sistema <a id="d41"></a>
+**Decisão:**
+- A Lixeira ganha um card na tela principal e um detalhe com os itens: restaurar, apagar os selecionados e esvaziar tudo. O card de Outros vira um atalho para ele.
+- O walk soma bytes e arquivos por item direto de `~/.local/share/Trash/files` (`trash_items`), com o mesmo agregador dos caches (D39). O detalhe junta isso à listagem do sistema (`trash::os_limited::list`), que traz o nome, a pasta original e a data.
+- A UI identifica cada item pelo `id` que o Rust deu (o caminho do `.trashinfo`). Restaurar e apagar relêem a listagem e só agem sobre itens presentes nela.
+- Restaurar **nunca sobrescreve**: um nome já ocupado no local original volta recusado com o motivo.
+- O item restaurado volta para a categoria de `classify(caminho original)`, fora do top-N.
+
+**Por quê:**
+- A Lixeira é o "liberável" mais óbvio do disco (5,77 GB nesta máquina) e ficava escondida dentro de Outros. Como no iOS ("Apagados recentemente"), ela merece um lugar próprio, e restaurar dá ao usuário uma saída que antes exigia o Nautilus.
+- Por `id` e não por caminho: um caminho vindo da UI poderia apontar para qualquer coisa, e o `restore_all`/`purge_all` do crate agem sobre o que recebem. Com o `id` conferido contra a listagem relida, o que chega ao crate é sempre um item real da Lixeira do usuário, montado no Rust (D19).
+- Tamanho do scan, não do `metadata` do crate: o crate dá o tamanho aparente de um arquivo e só a contagem de entradas de uma pasta. O walk já tem o espaço alocado (D06), sem I/O extra. O que o scan não viu é medido na hora com `tree_size`, com as mesmas regras.
+- Um item que o app moveu depois do scan é achado pelo caminho original (`moved`), porque o crate pode renomeá-lo dentro da Lixeira (`foto.2.jpg`) e não devolve o nome.
+- Sem sobrescrever: é o padrão do crate e do Nautilus, e a alternativa apagaria um arquivo que o usuário recriou.
+- Classificar pelo caminho original acerta o caso comum (uma foto volta para Fotos) sem reler o arquivo. Uma pasta restaurada vai inteira para a categoria do nome dela (normalmente Outros), e o próximo scan distribui.
+
+**Descartado:**
+- Mandar caminhos da UI, como no `move_to_trash`: a validação teria de reimplementar as regras do freedesktop (pasta `files/`, `.trashinfo` correspondente, lixeiras de outros discos).
+- Ler os `.trashinfo` no walk: seria I/O por item no caminho quente, só para o detalhe, que já relê a listagem ao abrir.
+- "Restaurar substituindo": perde dados sem desfazer.
+
+**Limitações:**
+- Bytes restaurados não entram no top-N da categoria até o próximo scan, e uma pasta restaurada não é redistribuída entre as categorias.
+- Itens de lixeiras de outros discos aparecem na lista (o crate lista todas), mas não estão na barra, que é do disco do sistema (D09). Eles vêm marcados como medidos agora.

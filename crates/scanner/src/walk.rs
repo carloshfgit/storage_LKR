@@ -3,7 +3,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -12,9 +12,9 @@ use jwalk::{Parallelism, WalkDirGeneric};
 
 use crate::classify::Classifier;
 use crate::disk::disk_info;
-use crate::model::{Category, CategoryStats, FileEntry, ScanProgress, ScanResult};
+use crate::model::{Category, CategoryStats, FileEntry, ScanProgress, ScanResult, TrashEntry};
 use crate::sniff::{MIN_SNIFF_BYTES, sniff};
-use crate::suggest::{Suggester, SuggestionsAgg, config_dir, download_dir};
+use crate::suggest::{ChildTotals, Suggester, SuggestionsAgg, config_dir, download_dir};
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -151,6 +151,7 @@ pub fn scan(
 
     let mut agg = Aggregator::new(opts.top_n);
     let mut suggestions = SuggestionsAgg::new(suggester, opts.top_n);
+    let mut trash_items = ChildTotals::new(classifier.trash_dir().map(|t| t.join("files")));
     agg.add_bytes(classifier.classify(&opts.root), root_meta.blocks() * 512);
 
     let mut seen_hardlinks: HashSet<u64> = HashSet::new();
@@ -199,6 +200,7 @@ pub fn scan(
         if c.in_trash {
             agg.trash_bytes += c.bytes;
             agg.trash_files += u64::from(!is_dir);
+            trash_items.add(&entry.parent_path, &entry.file_name, c.bytes, !is_dir);
         }
         if is_dir {
             agg.add_bytes(c.category, c.bytes);
@@ -227,6 +229,16 @@ pub fn scan(
         categories,
         trash_bytes,
         trash_files,
+        trash_items: trash_items
+            .finish()
+            .into_iter()
+            .map(|(path, bytes, files)| TrashEntry {
+                path,
+                bytes,
+                files,
+                moved: false,
+            })
+            .collect(),
         sniffed_files,
         sniffed_bytes,
         home: opts.home.clone(),
@@ -239,6 +251,35 @@ pub fn scan(
         elapsed_ms: started.elapsed().as_millis() as u64,
         finished_at: unix_now(),
     })
+}
+
+/// Espaço alocado e arquivos de `path` e de tudo dentro dele, sem seguir links simbólicos
+/// nem cruzar filesystems, como o walk. Para itens fora do último scan (a Lixeira de agora).
+pub fn tree_size(path: &Path) -> (u64, u64) {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return (0, 0);
+    };
+    let mut total = (meta.blocks() * 512, u64::from(!meta.is_dir()));
+    let mut pending = vec![path.to_path_buf()];
+    let dev = meta.dev();
+    while let Some(dir) = pending.pop() {
+        let Ok(read) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for child in read.flatten() {
+            let Ok(meta) = child.metadata() else { continue };
+            if meta.dev() != dev {
+                continue;
+            }
+            total.0 += meta.blocks() * 512;
+            if meta.is_dir() {
+                pending.push(child.path());
+            } else {
+                total.1 += 1;
+            }
+        }
+    }
+    total
 }
 
 fn unix_now() -> i64 {
@@ -454,6 +495,9 @@ mod tests {
         // A Lixeira conta o vídeo e os diretórios Trash/ e files/.
         assert!(r.trash_bytes >= 40_000 && r.trash_bytes <= r.categories[&Category::Other].bytes);
         assert!(r.trash_files >= 1 && r.trash_files <= r.categories[&Category::Other].files);
+        assert_eq!(r.trash_items.len(), 1);
+        assert_eq!(r.trash_items[0].path, trash.join("velho.mp4"));
+        assert_eq!(r.trash_items[0].files, 1);
         assert_eq!(r.home, home);
 
         fs::remove_dir_all(&dir).unwrap();
@@ -597,6 +641,42 @@ mod tests {
         let opts = ScanOptions::new(&dir);
         opts.cancel.store(true, Ordering::Relaxed);
         assert!(matches!(scan(&opts, |_| {}), Err(ScanError::Cancelled)));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn trash_is_summed_per_item() {
+        let dir = temp_dir("trash-items");
+        let trash = dir.join(".local/share/Trash");
+        fs::create_dir_all(trash.join("files/pasta/sub")).unwrap();
+        fs::create_dir_all(trash.join("info")).unwrap();
+        write(&trash.join("files/pasta/a.jpg"), 30_000);
+        write(&trash.join("files/pasta/sub/b.pdf"), 30_000);
+        write(&trash.join("files/solto.iso"), 10_000);
+        write(&trash.join("info/pasta.trashinfo"), 100);
+
+        let mut opts = ScanOptions::new(&dir);
+        opts.home = dir.clone();
+        let r = scan(&opts, |_| {}).unwrap();
+        let items: Vec<_> = r
+            .trash_items
+            .iter()
+            .map(|t| (t.path.clone(), t.files))
+            .collect();
+        assert_eq!(
+            items,
+            [
+                (trash.join("files/pasta"), 2),
+                (trash.join("files/solto.iso"), 1)
+            ]
+        );
+        // A pasta conta ela mesma, sub/ e os dois arquivos, como o `tree_size`.
+        assert_eq!(
+            (r.trash_items[0].bytes, r.trash_items[0].files),
+            tree_size(&trash.join("files/pasta"))
+        );
+        assert!(r.trash_items.iter().map(|t| t.bytes).sum::<u64>() < r.trash_bytes);
+
         fs::remove_dir_all(&dir).unwrap();
     }
 }

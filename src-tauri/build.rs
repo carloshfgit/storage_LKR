@@ -13,6 +13,9 @@ const COMMANDS: &[&str] = &[
     "old_downloads",
     "largest_files",
     "trash_caches",
+    "trash_items",
+    "restore_from_trash",
+    "purge_from_trash",
 ];
 
 fn main() {

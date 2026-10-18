@@ -11,7 +11,9 @@ use scanner::{
 use tauri::State;
 use tauri::ipc::Channel;
 
-use crate::state::{AppState, Cleanup, FileItem, ScanEvent, TrashReport};
+use crate::state::{
+    AppState, Cleanup, FileItem, PurgeReport, ScanEvent, TrashItem, TrashListing, TrashReport,
+};
 
 /// O app sempre mostra o disco do sistema.
 const SCAN_ROOT: &str = "/";
@@ -83,11 +85,12 @@ pub fn trash_caches(
 }
 
 /// Abre o gerenciador de arquivos com `path` selecionado. Só aceita arquivos (e caches) do
-/// último scan. `async` porque a chamada D-Bus ao Nautilus bloqueia, e commands síncronos
-/// rodam na thread principal.
+/// último scan e itens que estão na Lixeira agora. `async` porque a chamada D-Bus ao
+/// Nautilus bloqueia, e commands síncronos rodam na thread principal.
 #[tauri::command(async)]
 pub fn reveal(state: State<'_, Arc<AppState>>, path: PathBuf) -> Result<(), String> {
-    if !state.contains_file(&path) {
+    let in_trash = || list_trash().is_ok_and(|l| l.iter().any(|i| i.stored_path() == path));
+    if !state.contains_file(&path) && !in_trash() {
         return Err("arquivo fora do último scan".into());
     }
     tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| e.to_string())
@@ -131,6 +134,77 @@ pub fn docker_prune(
             |m| docker_usage(m, DEFAULT_DOCKER_TIMEOUT),
         )
         .map_err(|e| e.to_string())
+}
+
+/// Itens da Lixeira de agora, com o tamanho do último scan ou medido na hora.
+#[tauri::command(async)]
+pub fn trash_items(state: State<'_, Arc<AppState>>) -> Result<Vec<TrashItem>, String> {
+    state
+        .trash_items(list_trash, scanner::tree_size)
+        .map_err(|e| e.to_string())
+}
+
+/// Devolve itens da Lixeira ao local original, sem sobrescrever nada. `ids` são os que o
+/// `trash_items` devolveu.
+#[tauri::command(async)]
+pub fn restore_from_trash(
+    state: State<'_, Arc<AppState>>,
+    ids: Vec<String>,
+) -> Result<TrashReport, String> {
+    state
+        .restore_from_trash(&ids, list_trash, scanner::tree_size, restore_trash_item)
+        .map_err(|e| e.to_string())
+}
+
+/// Apaga permanentemente só os itens escolhidos da Lixeira. Exige `confirm == true`.
+#[tauri::command(async)]
+pub fn purge_from_trash(
+    state: State<'_, Arc<AppState>>,
+    ids: Vec<String>,
+    confirm: bool,
+) -> Result<PurgeReport, String> {
+    state
+        .purge_from_trash(
+            &ids,
+            confirm,
+            list_trash,
+            |item| trash::os_limited::purge_all([os_item(item)]).map_err(|e| e.to_string()),
+            root_disk,
+        )
+        .map_err(|e| e.to_string())
+}
+
+fn list_trash() -> Result<Vec<TrashListing>, String> {
+    let items = trash::os_limited::list().map_err(|e| e.to_string())?;
+    Ok(items
+        .into_iter()
+        .map(|i| TrashListing {
+            id: i.id.into(),
+            name: i.name,
+            original_parent: i.original_parent,
+            deleted_at: i.time_deleted,
+        })
+        .collect())
+}
+
+fn os_item(item: &TrashListing) -> trash::TrashItem {
+    trash::TrashItem {
+        id: item.id.clone().into_os_string(),
+        name: item.name.clone(),
+        original_parent: item.original_parent.clone(),
+        time_deleted: item.deleted_at,
+    }
+}
+
+/// O crate não sobrescreve: um nome já ocupado no local original vira `RestoreCollision`.
+fn restore_trash_item(item: &TrashListing) -> Result<(), String> {
+    match trash::os_limited::restore_all([os_item(item)]) {
+        Ok(()) => Ok(()),
+        Err(trash::Error::RestoreCollision { .. }) => {
+            Err("já existe um item com esse nome no local original".into())
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 fn root_disk() -> std::io::Result<DiskInfo> {

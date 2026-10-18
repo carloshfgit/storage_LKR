@@ -23,6 +23,9 @@ pub fn run() {
             commands::old_downloads,
             commands::largest_files,
             commands::trash_caches,
+            commands::trash_items,
+            commands::restore_from_trash,
+            commands::purge_from_trash,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

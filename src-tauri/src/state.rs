@@ -4,6 +4,7 @@
 
 mod cache;
 mod cleanup;
+mod trash;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -14,6 +15,7 @@ use serde::Serialize;
 
 pub use cache::default_path as default_cache_path;
 pub use cleanup::{Cleanup, FileItem, TrashReport};
+pub use trash::{PurgeReport, TrashItem, TrashListing};
 
 /// Mensagens enviadas ao frontend durante uma varredura, nesta ordem:
 /// `progress`* → (`done` → `docker`) | `cancelled` | `error`.

@@ -16,6 +16,9 @@
     "allow-docker-prune",
     "allow-old-downloads",
     "allow-largest-files",
-    "allow-trash-caches"
+    "allow-trash-caches",
+    "allow-trash-items",
+    "allow-restore-from-trash",
+    "allow-purge-from-trash"
   ]
 }

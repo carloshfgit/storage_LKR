@@ -35,6 +35,16 @@ export interface CacheEntry {
   files: number;
 }
 
+/** Item direto da Lixeira, como o scan o contou. */
+export interface TrashEntry {
+  /** Onde está guardado na Lixeira ou, se `moved`, o caminho original. */
+  path: string;
+  bytes: number;
+  files: number;
+  /** Movido pelo app depois do scan. */
+  moved: boolean;
+}
+
 export interface Suggestions {
   /** Pasta de Downloads do `user-dirs.dirs`; `null` se desligada. */
   downloads_dir: string | null;
@@ -81,6 +91,8 @@ export interface ScanResult {
   categories: Record<Category, CategoryStats>;
   trash_bytes: number;
   trash_files: number;
+  /** Itens da Lixeira contados no scan (e os que o app moveu para lá depois). */
+  trash_items: TrashEntry[];
   /** Arquivos sem extensão classificados pelo conteúdo, já contados nas categorias. */
   sniffed_files: number;
   sniffed_bytes: number;
@@ -183,4 +195,42 @@ export function emptyTrash(): Promise<Cleanup> {
 /** `build_cache` → `docker builder prune -f`; `unused_images` → `docker image prune -a -f`, no daemon de `mode`. */
 export function dockerPrune(mode: DockerMode, target: DockerTarget): Promise<Cleanup> {
   return invoke("docker_prune", { mode, target, confirm: true });
+}
+
+/** Um item da Lixeira de agora, como o sistema o lista. */
+export interface TrashItem {
+  /** O que volta para o Rust em `restoreFromTrash`/`purgeFromTrash`. */
+  id: string;
+  name: string;
+  original_path: string;
+  /** Onde está guardado (`~/.local/share/Trash/files/…`); serve para o "abrir na pasta". */
+  stored_path: string;
+  /** Segundos Unix. */
+  deleted_at: number;
+  bytes: number;
+  files: number;
+  /** Contado no último scan; senão, o tamanho foi medido agora e ainda não está na barra. */
+  counted: boolean;
+}
+
+export interface PurgeReport {
+  purged: number;
+  freed_bytes: number;
+  rejected: { path: string; reason: string }[];
+  result: ScanResult;
+}
+
+/** A Lixeira de agora, os maiores primeiro. */
+export function trashItems(): Promise<TrashItem[]> {
+  return invoke("trash_items");
+}
+
+/** Devolve os itens ao local original, sem sobrescrever; um nome já ocupado volta em `rejected`. */
+export function restoreFromTrash(ids: string[]): Promise<TrashReport> {
+  return invoke("restore_from_trash", { ids });
+}
+
+/** Apaga permanentemente só esses itens. Chamar só depois da confirmação do usuário. */
+export function purgeFromTrash(ids: string[]): Promise<PurgeReport> {
+  return invoke("purge_from_trash", { ids, confirm: true });
 }

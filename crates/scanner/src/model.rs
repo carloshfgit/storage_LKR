@@ -106,6 +106,25 @@ pub struct CacheEntry {
     pub files: u64,
 }
 
+/// Item direto da Lixeira (`Trash/files/<nome>`), com tudo o que há dentro.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrashEntry {
+    /// Onde o item está guardado na Lixeira ou, se `moved`, o caminho original dele.
+    #[serde(serialize_with = "lossy_path")]
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub files: u64,
+    /// Movido pelo app depois do scan. O nome dentro da Lixeira só o sistema sabe
+    /// (`foto.jpg`, `foto.2.jpg`…), então o item é achado pelo caminho original.
+    pub moved: bool,
+}
+
+impl TrashEntry {
+    fn is(&self, stored: &Path, original: &Path) -> bool {
+        self.path == if self.moved { original } else { stored }
+    }
+}
+
 /// Sugestões de limpeza calculadas no walk (ARCHITECTURE §4).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Suggestions {
@@ -137,6 +156,9 @@ pub struct ScanResult {
     pub trash_bytes: u64,
     /// Arquivos (não diretórios) dentro da Lixeira, já contados em `Other`.
     pub trash_files: u64,
+    /// Itens da Lixeira, em ordem decrescente de tamanho no fim do scan; o que o app move
+    /// para lá depois entra no fim.
+    pub trash_items: Vec<TrashEntry>,
     /// Arquivos sem extensão classificados pelo conteúdo (regra 6b), já contados nas categorias.
     pub sniffed_files: u64,
     pub sniffed_bytes: u64,
@@ -215,6 +237,12 @@ impl ScanResult {
         other.files += 1;
         self.trash_bytes += entry.bytes;
         self.trash_files += 1;
+        self.trash_items.push(TrashEntry {
+            path: entry.path.clone(),
+            bytes: entry.bytes,
+            files: 1,
+            moved: true,
+        });
         Some(entry)
     }
 
@@ -233,6 +261,52 @@ impl ScanResult {
         }
         self.trash_bytes += entry.bytes;
         self.trash_files += entry.files;
+        self.trash_items.push(TrashEntry {
+            path: entry.path.clone(),
+            bytes: entry.bytes,
+            files: entry.files,
+            moved: true,
+        });
+        Some(entry)
+    }
+
+    /// Item da Lixeira guardado em `stored` e que veio de `original`, se o scan o contou.
+    pub fn find_trash_item(&self, stored: &Path, original: &Path) -> Option<&TrashEntry> {
+        self.trash_items.iter().find(|t| t.is(stored, original))
+    }
+
+    /// Contabiliza um item restaurado da Lixeira: sai de `Other`/`trash_bytes` e entra na
+    /// categoria do caminho original (fora da lista dos maiores; o próximo scan acerta).
+    /// `None` se o scan não o contou, e aí nada muda.
+    pub fn record_restored(&mut self, stored: &Path, original: &Path) -> Option<TrashEntry> {
+        let entry = self.take_trash_item(stored, original)?;
+        let category = Classifier::new(&self.home).classify(original);
+        let stats = self.categories.entry(category).or_default();
+        stats.bytes += entry.bytes;
+        stats.files += entry.files;
+        Some(entry)
+    }
+
+    /// Contabiliza um item apagado da Lixeira. Chamar [`ScanResult::set_disk`] depois, com
+    /// o `statvfs` relido.
+    pub fn record_purged(&mut self, stored: &Path, original: &Path) -> Option<TrashEntry> {
+        self.take_trash_item(stored, original)
+    }
+
+    /// Tira o item de `trash_items`, de `Other`/`trash_bytes` e, com o que havia dentro
+    /// dele, da lista dos maiores.
+    fn take_trash_item(&mut self, stored: &Path, original: &Path) -> Option<TrashEntry> {
+        let i = self
+            .trash_items
+            .iter()
+            .position(|t| t.is(stored, original))?;
+        let entry = self.trash_items.remove(i);
+        let other = self.categories.entry(Category::Other).or_default();
+        other.bytes = other.bytes.saturating_sub(entry.bytes);
+        other.files = other.files.saturating_sub(entry.files);
+        other.top.retain(|f| !f.path.starts_with(stored));
+        self.trash_bytes = self.trash_bytes.saturating_sub(entry.bytes);
+        self.trash_files = self.trash_files.saturating_sub(entry.files);
         Some(entry)
     }
 
@@ -247,6 +321,7 @@ impl ScanResult {
         other.top.retain(|f| !classifier.in_trash(&f.path));
         self.trash_bytes = 0;
         self.trash_files = 0;
+        self.trash_items.clear();
     }
 
     /// Troca o `DiskInfo` depois de uma limpeza e recalcula o restante, mantendo o Docker
@@ -317,6 +392,7 @@ mod tests {
             categories: HashMap::new(),
             trash_bytes: 0,
             trash_files: 0,
+            trash_items: Vec::new(),
             sniffed_files: 0,
             sniffed_bytes: 0,
             home: PathBuf::new(),
@@ -458,6 +534,12 @@ mod tests {
         );
         r.trash_bytes = 40;
         r.trash_files = 1;
+        r.trash_items = vec![TrashEntry {
+            path: "/home/u/.local/share/Trash/files/v.mp4".into(),
+            bytes: 40,
+            files: 1,
+            moved: false,
+        }];
         r.unaccounted_bytes = 900 - 400;
         r
     }
@@ -599,5 +681,72 @@ mod tests {
         r.set_disk(disk);
         assert_eq!((r.docker_bytes, r.unaccounted_bytes), (100, 0));
         assert_eq!(r.disk.available_bytes, 540);
+    }
+
+    #[test]
+    fn restored_item_goes_back_to_its_category() {
+        let mut r = scanned();
+        let total = r.scanned_bytes() + r.unaccounted_bytes;
+        let stored = Path::new("/home/u/.local/share/Trash/files/v.mp4");
+        let restored = r
+            .record_restored(stored, Path::new("/home/u/Vídeos/v.mp4"))
+            .unwrap();
+        assert_eq!(restored.bytes, 40);
+
+        assert_eq!((r.trash_bytes, r.trash_files), (0, 0));
+        assert!(r.trash_items.is_empty());
+        let other = &r.categories[&Category::Other];
+        assert_eq!((other.bytes, other.files, other.top.len()), (60, 1, 1));
+        let videos = &r.categories[&Category::Videos];
+        assert_eq!((videos.bytes, videos.files), (40, 1));
+        // Nada saiu do disco: a barra soma o mesmo.
+        assert_eq!(r.scanned_bytes() + r.unaccounted_bytes, total);
+
+        assert!(
+            r.record_restored(stored, Path::new("/home/u/Vídeos/v.mp4"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn item_moved_by_the_app_is_found_by_original_path() {
+        let mut r = scanned();
+        r.record_trashed(Path::new("/home/u/a.jpg")).unwrap();
+        assert_eq!(r.trash_items.len(), 2);
+        // O sistema guardou como `a.2.jpg`; o app só sabe o caminho original.
+        let stored = Path::new("/home/u/.local/share/Trash/files/a.2.jpg");
+        let original = Path::new("/home/u/a.jpg");
+        assert_eq!(r.find_trash_item(stored, original).unwrap().bytes, 200);
+
+        r.record_restored(stored, original).unwrap();
+        assert_eq!(r.categories[&Category::Photos].bytes, 300);
+        assert_eq!((r.trash_bytes, r.trash_files), (40, 1));
+    }
+
+    #[test]
+    fn purged_item_leaves_other_and_trash() {
+        let mut r = with_old_downloads();
+        r.record_trashed_cache(Path::new("/home/u/.cache/pip"))
+            .unwrap();
+        let purged = r
+            .record_purged(
+                Path::new("/home/u/.local/share/Trash/files/pip"),
+                Path::new("/home/u/.cache/pip"),
+            )
+            .unwrap();
+        assert_eq!((purged.bytes, purged.files), (30, 3));
+        assert_eq!((r.trash_bytes, r.trash_files), (40, 1));
+        let other = &r.categories[&Category::Other];
+        assert_eq!((other.bytes, other.files), (70, 0));
+
+        // Algo que o scan não viu (movido para a Lixeira por fora): nada muda.
+        assert!(
+            r.record_purged(
+                Path::new("/home/u/.local/share/Trash/files/x"),
+                Path::new("/home/u/x")
+            )
+            .is_none()
+        );
+        assert_eq!(r.trash_bytes, 40);
     }
 }

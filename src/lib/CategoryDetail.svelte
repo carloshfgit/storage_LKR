@@ -30,6 +30,7 @@
     version,
     onback,
     onupdate,
+    onopentrash,
   }: {
     segment: Segment;
     result: ScanResult;
@@ -40,6 +41,8 @@
     onback: () => void;
     /** Recebe o resultado atualizado pelo Rust depois de cada ação. */
     onupdate: (result: ScanResult) => void;
+    /** Abre o detalhe da Lixeira. */
+    onopentrash: () => void;
   } = $props();
 
   let files = $state.raw<FileItem[] | null>(null);
@@ -312,6 +315,7 @@
     <h2>Lixeira <span>{formatBytes(result.trash_bytes)}</span></h2>
     <p class="muted">Arquivos na Lixeira continuam ocupando espaço até ela ser esvaziada.</p>
     <div class="actions">
+      <button onclick={onopentrash} disabled={busy !== null}>Ver itens</button>
       <button class="destructive" onclick={askEmptyTrash} disabled={busy !== null}>
         {busy === "empty" ? "Esvaziando…" : "Esvaziar Lixeira"}
       </button>

@@ -106,6 +106,13 @@ fn main() -> ExitCode {
             Category::Other => {
                 row(c.label(), s.bytes, Some(s.files));
                 row("  ↳ Lixeira", result.trash_bytes, None);
+                let items: u64 = result.trash_items.iter().map(|t| t.bytes).sum();
+                println!(
+                    "{:<24} {:>10}   ({} itens em Trash/files)",
+                    "    itens",
+                    gb(items),
+                    result.trash_items.len()
+                );
             }
             _ => row(c.label(), s.bytes, Some(s.files)),
         }

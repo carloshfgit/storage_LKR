@@ -235,7 +235,7 @@ impl AppState {
     /// Roda `clean` entre duas leituras do disco, passa o que ela devolveu para `update`
     /// aplicar ao último resultado e recalcula o restante com o disco novo. O lock não
     /// fica preso durante a limpeza, que pode levar minutos.
-    fn measured_cleanup<T>(
+    pub(super) fn measured_cleanup<T>(
         &self,
         confirm: bool,
         clean: impl FnOnce() -> Result<T, String>,
@@ -267,7 +267,7 @@ impl AppState {
     }
 
     /// Um scan em andamento vai substituir o resultado: agir sobre o antigo confundiria a UI.
-    fn ensure_idle(&self) -> Result<(), ActionError> {
+    pub(super) fn ensure_idle(&self) -> Result<(), ActionError> {
         if self.running.load(Ordering::SeqCst) {
             return Err(ActionError::Busy);
         }

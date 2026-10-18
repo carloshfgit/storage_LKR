@@ -20,6 +20,8 @@
   import StorageBar from "$lib/StorageBar.svelte";
   import SuggestionDetail from "$lib/SuggestionDetail.svelte";
   import Suggestions, { type SuggestionKind } from "$lib/Suggestions.svelte";
+  import TrashCard from "$lib/TrashCard.svelte";
+  import TrashDetail from "$lib/TrashDetail.svelte";
 
   type Phase = "idle" | "scanning" | "done" | "cancelled" | "error";
 
@@ -36,8 +38,10 @@
   let scanId = 0;
   /** Categoria aberta no detalhe. */
   let selected = $state<Category | null>(null);
-  /** Sugestão aberta no detalhe (só uma das duas telas fica aberta). */
+  /** Sugestão aberta no detalhe (só uma das telas de detalhe fica aberta). */
   let suggestion = $state<SuggestionKind | null>(null);
+  /** Detalhe da Lixeira aberto. */
+  let trashOpen = $state(false);
   /** Scan em segundo plano (ao abrir com o cache): a tela fica no resultado anterior até o `done`. */
   let background = $state(false);
   /** Incrementa a cada `done`; o detalhe aberto recarrega a lista. */
@@ -50,12 +54,21 @@
   function open(key: Category) {
     selected = key;
     suggestion = null;
+    trashOpen = false;
     window.scrollTo(0, 0);
   }
 
   function openSuggestion(kind: SuggestionKind) {
     suggestion = kind;
     selected = null;
+    trashOpen = false;
+    window.scrollTo(0, 0);
+  }
+
+  function openTrash() {
+    trashOpen = true;
+    selected = null;
+    suggestion = null;
     window.scrollTo(0, 0);
   }
 
@@ -83,6 +96,7 @@
 
   const detail = $derived(selected && !showLive ? segments.find((s) => s.key === selected) : undefined);
   const suggestionView = $derived(suggestion && !showLive ? suggestion : null);
+  const trashView = $derived(trashOpen && !showLive);
 
   const free = $derived(disk?.available_bytes ?? 0);
   const used = $derived(disk ? disk.total_bytes - disk.available_bytes : 0);
@@ -193,6 +207,7 @@
         version={scanVersion}
         onback={() => (selected = null)}
         onupdate={update}
+        onopentrash={openTrash}
       />
     </div>
   {:else if suggestionView && result}
@@ -205,10 +220,14 @@
         onupdate={update}
       />
     </div>
+  {:else if trashView && result}
+    <div class="screen detail">
+      <TrashDetail {result} version={scanVersion} onback={() => (trashOpen = false)} onupdate={update} />
+    </div>
   {/if}
 
   <!-- Escondida, não desmontada: a barra volta do detalhe sem refazer a animação. -->
-  <div class="screen home" hidden={!!detail || !!suggestionView}>
+  <div class="screen home" hidden={!!detail || !!suggestionView || trashView}>
     <header>
       <h1>Armazenamento</h1>
       {#if disk}
@@ -257,6 +276,7 @@
     </section>
 
     {#if result && !showLive}
+      <TrashCard {result} onselect={openTrash} />
       <Suggestions {result} onselect={openSuggestion} />
     {/if}
   </div>

@@ -369,32 +369,52 @@ Hoje o app só escaneia `/` e não cruza filesystems (D07). Com `/home` numa par
 
 ## Etapa 12 — Lixeira na tela inicial
 Hoje a Lixeira só aparece dentro do detalhe de Outros, com o total e "Esvaziar Lixeira". Ela passa a ter um card próprio na tela inicial, que abre um detalhe com os itens, como as categorias e as sugestões.
-- [ ] `walk.rs`: agregar bytes e arquivos por **item direto** de `~/.local/share/Trash/files` (como os caches da Etapa 10), sem mudar categorias nem `trash_bytes`. Vai para `ScanResult.trash_items: Vec<TrashEntry { name, bytes, files }>` (tamanho alocado, como o resto). `cache::VERSION` incrementado.
-- [ ] **Commands** (os 4 passos do CLAUDE.md + wrappers em `api.ts`):
+- [x] `walk.rs`: agregar bytes e arquivos por **item direto** de `~/.local/share/Trash/files` (como os caches da Etapa 10), sem mudar categorias nem `trash_bytes`. Vai para `ScanResult.trash_items: Vec<TrashEntry { name, bytes, files }>` (tamanho alocado, como o resto). `cache::VERSION` incrementado.
+- [x] **Commands** (os 4 passos do CLAUDE.md + wrappers em `api.ts`):
   - `trash_items() -> Vec<TrashItem>`: junta `trash::os_limited::list` (nome, `original_parent`, `time_deleted`) com os bytes do scan, casando pelo nome em `Trash/files`. Itens que o scan não viu (movidos depois dele, outros discos) aparecem com o tamanho do `trash::os_limited::metadata`, marcados como estimados.
   - `restore_from_trash(ids) -> TrashReport`: a UI manda só o `id` que o Rust devolveu; o Rust relê `os_limited::list` e só aceita ids presentes nela. Usa `os_limited::restore_all`. Colisão com um arquivo que já existe no local original vira recusado com o motivo, sem sobrescrever.
   - `purge_from_trash(ids, confirm) -> Cleanup`: exige `confirm == true`, mesma validação de ids, `os_limited::purge_all` só dos escolhidos. Liberado = diferença do `statvfs`, como o `empty_trash`.
   - Recusados durante um scan, como as outras ações.
-- [ ] `model.rs`: a barra continua em 100%.
+- [x] `model.rs`: a barra continua em 100%.
   - `record_restored(original_path, bytes, files)`: sai de `trash_bytes`/`trash_files`/`Other` e entra na categoria de `classify(original_path)` (sem entrar no top-N; o próximo scan acerta).
   - `record_purged(name)`: sai de `trash_bytes`/`trash_files`/`Other` e de `trash_items`, e o disco novo entra por `set_disk`.
   - `record_trashed`/`record_trashed_cache` passam a acrescentar o item em `trash_items`.
-- [ ] **UI:**
+- [x] **UI:**
   - `TrashCard.svelte` na tela inicial, separado do card "Sugestões": ícone, "Lixeira", "N itens" e o tamanho. Com a Lixeira vazia, mostra "Lixeira vazia" sem abrir detalhe.
   - Clicar abre `TrashDetail.svelte`, com a mesma navegação do `CategoryDetail` (voltar, `Esc`, avisos, rodapé de seleção): uma linha por item com nome, local original, "apagado há X dias" e tamanho, ordenável por tamanho ou por data; "Abrir na pasta" mostra o item em `Trash/files`.
   - Rodapé com a seleção: "Restaurar" e "Apagar permanentemente" (este pelo `ConfirmDialog`, com o tamanho no título). No topo, "Esvaziar Lixeira", que reaproveita o `empty_trash`.
   - Em Outros, o card "Lixeira" vira um atalho para o `TrashDetail`.
-- [ ] Testes (pasta temporária e fakes, nunca a Lixeira real):
+- [x] Testes (pasta temporária e fakes, nunca a Lixeira real):
   - walk agrega por item de `Trash/files`;
   - `restore_from_trash` e `purge_from_trash` recusam id inventado, recusam sem confirmação e durante scan, e tratam colisão na restauração;
   - restaurar uma foto tira os bytes da Lixeira e os põe em Fotos, com a barra em 100%;
   - apagar selecionados mede o liberado pelo disco.
-- [ ] Docs: ARCHITECTURE §3, §4, §7 e §8; DECISIONS D41 (Lixeira como card próprio, ids validados no Rust em vez de caminhos, restaurar sem sobrescrever, restaurado volta para a categoria pela classificação do caminho original).
+- [x] Docs: ARCHITECTURE §3, §4, §7 e §8; DECISIONS D41 (Lixeira como card próprio, ids validados no Rust em vez de caminhos, restaurar sem sobrescrever, restaurado volta para a categoria pela classificação do caminho original).
 
 **Pronto quando:**
 - O card "Lixeira" aparece na tela inicial com o mesmo total do `du -sB1 ~/.local/share/Trash`.
 - Restaurar um item pelo app faz ele voltar ao local original (e sumir da Lixeira do Nautilus), e a barra move os bytes para a categoria certa.
 - Apagar um item selecionado aumenta o "Livre" no valor que o `df` confirma.
+
+**Resultado (17/10/2026):**
+- Nesta máquina, o CLI (`scan ~`) mostra 1.070 itens em `Trash/files`, somando 5,76 GB. É igual ao `ls -A ~/.local/share/Trash/files | wc -l` e ao `du -sB1 ~/.local/share/Trash/files` (5.763.960.832 B). O total da Lixeira (5,77 GB) é igual ao `du -sB1 ~/.local/share/Trash`.
+- Walk de `/` (release, cache quente): 2,34 / 2,40 s, sem mudança.
+- Na implementação:
+  - `TrashEntry` ganhou `moved`. O que o app manda para a Lixeira depois do scan entra em `trash_items` pelo caminho original, porque o crate pode renomear o item lá dentro (`foto.2.jpg`).
+  - O tamanho de um item que o scan não viu vem de um `tree_size` próprio (espaço alocado), e não do `metadata` do crate, que só dá o tamanho aparente ou a contagem de entradas. Esses itens aparecem com `*`.
+  - `purge_from_trash` devolve um `PurgeReport` com os recusados; o `Cleanup` do `empty_trash` não muda.
+  - O `reveal` também aceita o caminho guardado de um item que está na Lixeira agora.
+  - Os caches agora usam o mesmo agregador da Lixeira (`ChildTotals`).
+  - `cache::VERSION` foi para 5.
+- Testes novos:
+  - walk somando por item, comparado com o `tree_size`;
+  - `record_restored` (vídeo de volta em Vídeos, com a barra somando o mesmo), item movido pelo app achado pelo caminho original e `record_purged`;
+  - ponte com uma Lixeira freedesktop numa pasta temporária: listagem com tamanho do scan ou medido, restauração com id repetido e inventado, colisão sem contabilizar, apagar com e sem confirmação medindo o liberado e recusa durante um scan.
+- Workspace: 82 testes passam, clippy limpo, `npm run check` sem erros.
+- ⏳ **Falta a conferência visual**, que precisa ser feita por você:
+  1. Ver o card "Lixeira" na tela inicial e abrir o detalhe.
+  2. Restaurar um item e conferir que ele voltou ao lugar (e sumiu da Lixeira do Nautilus).
+  3. Apagar um item e comparar o liberado com o `df -B1 /` antes e depois.
 
 ---
 

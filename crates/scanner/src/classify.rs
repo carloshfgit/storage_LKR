@@ -139,6 +139,11 @@ impl Classifier {
                 .any(|d| is_under(bytes, d.as_os_str().as_bytes()))
     }
 
+    /// `~/.local/share/Trash`; `None` sem `$HOME`.
+    pub fn trash_dir(&self) -> Option<&Path> {
+        self.trash.as_deref()
+    }
+
     pub fn in_trash(&self, path: &Path) -> bool {
         self.trash
             .as_ref()

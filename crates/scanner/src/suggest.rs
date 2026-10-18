@@ -3,7 +3,7 @@
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -84,15 +84,57 @@ impl Suggester {
     pub(crate) fn in_cache(&self, path: &Path) -> bool {
         self.cache.as_ref().is_some_and(|c| strictly_under(path, c))
     }
+}
 
-    /// Nome do item direto de `~/.cache` que contém a entrada `parent/name`, sem alocar.
-    fn cache_key<'a>(
-        &self,
-        parent: &'a Path,
-        name: &'a std::ffi::OsStr,
-    ) -> Option<&'a std::ffi::OsStr> {
-        let rel = parent.strip_prefix(self.cache.as_ref()?).ok()?;
+/// Bytes e arquivos por item direto de uma pasta (`~/.cache`, `Trash/files`), somados na
+/// thread que consome o walk.
+pub(crate) struct ChildTotals {
+    dir: Option<PathBuf>,
+    /// Nome do item direto → (bytes, arquivos).
+    totals: HashMap<OsString, (u64, u64)>,
+}
+
+impl ChildTotals {
+    /// `None` desliga a soma.
+    pub(crate) fn new(dir: Option<PathBuf>) -> Self {
+        Self {
+            dir,
+            totals: HashMap::new(),
+        }
+    }
+
+    /// Nome do item direto de `dir` que contém a entrada `parent/name`, sem alocar.
+    fn key<'a>(&self, parent: &'a Path, name: &'a OsStr) -> Option<&'a OsStr> {
+        let rel = parent.strip_prefix(self.dir.as_ref()?).ok()?;
         Some(rel.components().next().map_or(name, |c| c.as_os_str()))
+    }
+
+    /// Soma a entrada `parent/name` (arquivo ou diretório) ao item que a contém. Fora de
+    /// `dir`, não faz nada.
+    pub(crate) fn add(&mut self, parent: &Path, name: &OsStr, bytes: u64, is_file: bool) {
+        let Some(key) = self.key(parent, name) else {
+            return;
+        };
+        let slot = match self.totals.get_mut(key) {
+            Some(slot) => slot,
+            None => self.totals.entry(key.to_owned()).or_default(),
+        };
+        slot.0 += bytes;
+        slot.1 += u64::from(is_file);
+    }
+
+    /// (caminho, bytes, arquivos) de cada item, em ordem decrescente de tamanho.
+    pub(crate) fn finish(self) -> Vec<(PathBuf, u64, u64)> {
+        let Some(dir) = self.dir else {
+            return Vec::new();
+        };
+        let mut items: Vec<_> = self
+            .totals
+            .into_iter()
+            .map(|(name, (bytes, files))| (dir.join(name), bytes, files))
+            .collect();
+        items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        items
     }
 }
 
@@ -119,19 +161,18 @@ pub(crate) struct SuggestionsAgg {
     old_files: u64,
     /// Min-heap, como o das categorias.
     old_top: BinaryHeap<Reverse<OldItem>>,
-    /// Item direto de `~/.cache` → (bytes, arquivos).
-    caches: HashMap<OsString, (u64, u64)>,
+    caches: ChildTotals,
 }
 
 impl SuggestionsAgg {
     pub(crate) fn new(suggester: Suggester, top_n: usize) -> Self {
         Self {
+            caches: ChildTotals::new(suggester.cache.clone()),
             suggester,
             top_n,
             old_bytes: 0,
             old_files: 0,
             old_top: BinaryHeap::new(),
-            caches: HashMap::new(),
         }
     }
 
@@ -165,22 +206,8 @@ impl SuggestionsAgg {
     }
 
     /// Soma a entrada `parent/name` (arquivo ou diretório) ao item de `~/.cache` que a contém.
-    pub(crate) fn add_cache(
-        &mut self,
-        parent: &Path,
-        name: &std::ffi::OsStr,
-        bytes: u64,
-        is_file: bool,
-    ) {
-        let Some(key) = self.suggester.cache_key(parent, name) else {
-            return;
-        };
-        let slot = match self.caches.get_mut(key) {
-            Some(slot) => slot,
-            None => self.caches.entry(key.to_owned()).or_default(),
-        };
-        slot.0 += bytes;
-        slot.1 += u64::from(is_file);
+    pub(crate) fn add_cache(&mut self, parent: &Path, name: &OsStr, bytes: u64, is_file: bool) {
+        self.caches.add(parent, name, bytes, is_file);
     }
 
     pub(crate) fn finish(self) -> Suggestions {
@@ -205,19 +232,12 @@ impl SuggestionsAgg {
             })
             .collect();
 
-        let mut caches: Vec<CacheEntry> = match &suggester.cache {
-            Some(dir) => caches
-                .into_iter()
-                .map(|(name, (bytes, files))| CacheEntry {
-                    path: dir.join(name),
-                    bytes,
-                    files,
-                })
-                .collect(),
-            None => Vec::new(),
-        };
-        caches.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.path.cmp(&b.path)));
-        caches.truncate(MAX_CACHE_ENTRIES);
+        let caches = caches
+            .finish()
+            .into_iter()
+            .take(MAX_CACHE_ENTRIES)
+            .map(|(path, bytes, files)| CacheEntry { path, bytes, files })
+            .collect();
 
         Suggestions {
             downloads_dir: suggester.downloads,
@@ -301,8 +321,10 @@ mod tests {
         assert!(s.in_cache(Path::new("/home/u/.cache/pip")));
         assert!(!s.in_cache(Path::new("/home/u/.cache")));
         assert!(!s.in_cache(Path::new("/home/u/.cachex/a")));
+        let totals = ChildTotals::new(s.cache.clone());
         let key = |parent: &str, name: &str| {
-            s.cache_key(Path::new(parent), std::ffi::OsStr::new(name))
+            totals
+                .key(Path::new(parent), OsStr::new(name))
                 .map(|k| k.to_string_lossy().into_owned())
         };
         assert_eq!(key("/home/u/.cache", "pip").as_deref(), Some("pip"));

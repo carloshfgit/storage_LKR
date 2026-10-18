@@ -17,7 +17,7 @@ pub use docker::{
 };
 pub use model::{
     CacheEntry, Category, CategoryStats, DiskInfo, FileEntry, OldDownloads, ScanProgress,
-    ScanResult, SuggestedFile, Suggestions,
+    ScanResult, SuggestedFile, Suggestions, TrashEntry,
 };
 pub use suggest::{MAX_CACHE_ENTRIES, OLD_DOWNLOAD_DAYS};
-pub use walk::{ScanError, ScanOptions, scan};
+pub use walk::{ScanError, ScanOptions, scan, tree_size};

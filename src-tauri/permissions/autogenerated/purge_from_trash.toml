@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-purge-from-trash"
+description = "Enables the purge_from_trash command without any pre-configured scope."
+commands.allow = ["purge_from_trash"]
+
+[[permission]]
+identifier = "deny-purge-from-trash"
+description = "Denies the purge_from_trash command without any pre-configured scope."
+commands.deny = ["purge_from_trash"]

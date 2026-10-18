@@ -9,7 +9,7 @@ use scanner::ScanResult;
 use serde::{Deserialize, Serialize};
 
 /// Muda quando o formato do `ScanResult` muda; um cache de outra versão é ignorado.
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 
 #[derive(Serialize, Deserialize)]
 struct CacheFile {
