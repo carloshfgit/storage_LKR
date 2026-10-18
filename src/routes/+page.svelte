@@ -9,6 +9,7 @@
     lastScan,
     startScan,
     type Category,
+    type DockerMode,
     type DiskInfo,
     type ScanEvent,
     type ScanResult,
@@ -16,6 +17,7 @@
   import { CATEGORY_COLORS, CATEGORY_LABELS, type Segment } from "$lib/categories";
   import { formatBytes, formatCount, formatRelativeDate, formatSeconds } from "$lib/format";
   import CategoryDetail from "$lib/CategoryDetail.svelte";
+  import DockerDetail from "$lib/DockerDetail.svelte";
   import Legend from "$lib/Legend.svelte";
   import StorageBar from "$lib/StorageBar.svelte";
   import SuggestionDetail from "$lib/SuggestionDetail.svelte";
@@ -42,6 +44,8 @@
   let suggestion = $state<SuggestionKind | null>(null);
   /** Detalhe da Lixeira aberto. */
   let trashOpen = $state(false);
+  /** Detalhe de um daemon Docker, aberto por cima de Apps/Sistema: voltar retorna a ele. */
+  let dockerOpen = $state<DockerMode | null>(null);
   /** Scan em segundo plano (ao abrir com o cache): a tela fica no resultado anterior até o `done`. */
   let background = $state(false);
   /** Incrementa a cada `done`; o detalhe aberto recarrega a lista. */
@@ -53,6 +57,7 @@
 
   function open(key: Category) {
     selected = key;
+    dockerOpen = null;
     suggestion = null;
     trashOpen = false;
     window.scrollTo(0, 0);
@@ -61,6 +66,7 @@
   function openSuggestion(kind: SuggestionKind) {
     suggestion = kind;
     selected = null;
+    dockerOpen = null;
     trashOpen = false;
     window.scrollTo(0, 0);
   }
@@ -68,7 +74,13 @@
   function openTrash() {
     trashOpen = true;
     selected = null;
+    dockerOpen = null;
     suggestion = null;
+    window.scrollTo(0, 0);
+  }
+
+  function openDocker(mode: DockerMode) {
+    dockerOpen = mode;
     window.scrollTo(0, 0);
   }
 
@@ -97,6 +109,7 @@
   const detail = $derived(selected && !showLive ? segments.find((s) => s.key === selected) : undefined);
   const suggestionView = $derived(suggestion && !showLive ? suggestion : null);
   const trashView = $derived(trashOpen && !showLive);
+  const dockerView = $derived(selected === "apps_system" && !showLive ? dockerOpen : null);
 
   const free = $derived(disk?.available_bytes ?? 0);
   const used = $derived(disk ? disk.total_bytes - disk.available_bytes : 0);
@@ -197,7 +210,11 @@
 </script>
 
 <main>
-  {#if detail && result}
+  {#if dockerView && result}
+    <div class="screen detail">
+      <DockerDetail mode={dockerView} {result} version={scanVersion} onback={() => (dockerOpen = null)} />
+    </div>
+  {:else if detail && result}
     <div class="screen detail">
       <CategoryDetail
         segment={detail}
@@ -208,6 +225,7 @@
         onback={() => (selected = null)}
         onupdate={update}
         onopentrash={openTrash}
+        onopendocker={openDocker}
       />
     </div>
   {:else if suggestionView && result}

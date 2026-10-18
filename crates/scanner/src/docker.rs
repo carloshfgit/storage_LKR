@@ -123,37 +123,126 @@ pub fn docker_status(timeout: Duration) -> DockerStatus {
 /// existir, o Docker não estiver instalado, o daemon estiver parado, faltar permissão ou
 /// o comando estourar o `timeout`.
 pub fn docker_usage(mode: DockerMode, timeout: Duration) -> Option<DockerUsage> {
-    // Sem socket, nem roda o `docker`: o rootless não existe na maioria das máquinas.
+    parse_df(&run_docker(
+        mode,
+        &["system", "df", "--format", "json"],
+        timeout,
+    )?)
+}
+
+/// Roda um `docker` só de leitura no daemon de `mode` e devolve a saída. Sem socket, nem
+/// roda o `docker`: o rootless não existe na maioria das máquinas.
+fn run_docker(mode: DockerMode, args: &[&str], timeout: Duration) -> Option<String> {
     if !mode.socket().exists() {
         return None;
     }
-    let mut child = mode
-        .command()
-        .args(["system", "df", "--format", "json"])
+    let mut cmd = mode.command();
+    cmd.args(args);
+    run_with_timeout(cmd, timeout)
+}
+
+/// A saída é lida numa thread enquanto o comando roda: a do `df -v` passa dos 64 KiB do
+/// pipe, e esperar o exit antes de ler travaria o `docker` até o `timeout`.
+fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Option<String> {
+    let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        stdout.read_to_string(&mut out).map(|_| out)
+    });
 
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                break None;
             }
         }
     };
-    if !status.success() {
-        return None;
-    }
-    // A saída tem 4 linhas curtas: cabe no buffer do pipe, então ler depois do exit não trava.
-    let mut out = String::new();
-    child.stdout.take()?.read_to_string(&mut out).ok()?;
-    parse_df(&out)
+    // Com o processo encerrado, o pipe fecha e a leitura termina.
+    let out = reader.join().ok()?.ok()?;
+    status?.success().then_some(out)
+}
+
+/// Cada imagem, container, volume e entrada de build cache de um daemon, como o
+/// `docker system df -v` lista. Cada lista vem do maior para o menor.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerDetails {
+    pub images: Vec<DockerImage>,
+    pub containers: Vec<DockerContainer>,
+    pub volumes: Vec<DockerVolume>,
+    pub build_cache: Vec<DockerCacheEntry>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerImage {
+    pub id: String,
+    /// `<none>` numa imagem sem nome (dangling).
+    pub repository: String,
+    pub tag: String,
+    pub size: u64,
+    /// Camadas que outras imagens também usam; removê-la não libera esta parte.
+    pub shared_size: u64,
+    /// Containers (rodando ou parados) que usam a imagem.
+    pub containers: u64,
+    /// Segundos Unix; 0 se o Docker não informar.
+    pub created: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerContainer {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    /// `running`, `exited`, `created`, `paused`…
+    pub state: String,
+    /// Camada gravável do container.
+    pub size: u64,
+    /// Projeto do Docker Compose, pela label `com.docker.compose.project`.
+    pub project: Option<String>,
+    pub created: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerVolume {
+    pub name: String,
+    pub size: u64,
+    /// Containers que montam o volume; 0 = sem uso.
+    pub links: u64,
+    /// Criado sem nome (`VOLUME` no Dockerfile, `-v /caminho`); o `docker volume prune`
+    /// remove só esses.
+    pub anonymous: bool,
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerCacheEntry {
+    pub id: String,
+    /// Passo do build (`[builder 3/5] COPY …`, `pulled from …`).
+    pub description: String,
+    pub size: u64,
+    pub in_use: bool,
+    pub shared: bool,
+    pub last_used: i64,
+    pub usage_count: u64,
+}
+
+/// Roda `docker system df -v --format json` no daemon de `mode`. `None` nos mesmos casos
+/// do `docker_usage`.
+pub fn docker_details(mode: DockerMode, timeout: Duration) -> Option<DockerDetails> {
+    parse_details(&run_docker(
+        mode,
+        &["system", "df", "-v", "--format", "json"],
+        timeout,
+    )?)
 }
 
 /// O que o app sabe limpar no Docker. Volumes ficam de fora de propósito: guardam dados
@@ -245,6 +334,180 @@ fn parse_size(s: &str) -> Option<u64> {
         _ => return None,
     };
     Some((number.parse::<f64>().ok()? * factor).round() as u64)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct DfVerbose {
+    #[serde(default)]
+    images: Vec<VImage>,
+    #[serde(default)]
+    containers: Vec<VContainer>,
+    #[serde(default)]
+    volumes: Vec<VVolume>,
+    #[serde(default)]
+    build_cache: Vec<VCache>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct VImage {
+    #[serde(rename = "ID")]
+    id: String,
+    repository: String,
+    tag: String,
+    size: String,
+    shared_size: String,
+    containers: String,
+    created_at: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct VContainer {
+    #[serde(rename = "ID")]
+    id: String,
+    names: String,
+    image: String,
+    state: String,
+    size: String,
+    labels: String,
+    created_at: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct VVolume {
+    name: String,
+    size: String,
+    links: String,
+    labels: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct VCache {
+    #[serde(rename = "ID")]
+    id: String,
+    description: String,
+    size: String,
+    in_use: String,
+    shared: String,
+    last_used_at: String,
+    usage_count: String,
+}
+
+fn parse_details(out: &str) -> Option<DockerDetails> {
+    let v: DfVerbose = serde_json::from_str(out.trim()).ok()?;
+    // "N/A" (driver que não mede) e campos ausentes viram 0.
+    let size = |s: &str| parse_size(s).unwrap_or(0);
+    let count = |s: &str| s.trim().parse::<u64>().unwrap_or(0);
+
+    let mut d = DockerDetails {
+        images: v
+            .images
+            .into_iter()
+            .map(|i| DockerImage {
+                size: size(&i.size),
+                shared_size: size(&i.shared_size),
+                containers: count(&i.containers),
+                created: parse_time(&i.created_at),
+                id: i.id,
+                repository: i.repository,
+                tag: i.tag,
+            })
+            .collect(),
+        containers: v
+            .containers
+            .into_iter()
+            .map(|c| DockerContainer {
+                size: size(&c.size),
+                project: label(&c.labels, "com.docker.compose.project"),
+                created: parse_time(&c.created_at),
+                id: c.id,
+                name: c.names,
+                image: c.image,
+                state: c.state,
+            })
+            .collect(),
+        volumes: v
+            .volumes
+            .into_iter()
+            .map(|vol| DockerVolume {
+                size: size(&vol.size),
+                links: count(&vol.links),
+                anonymous: label(&vol.labels, "com.docker.volume.anonymous").is_some(),
+                project: label(&vol.labels, "com.docker.compose.project"),
+                name: vol.name,
+            })
+            .collect(),
+        build_cache: v
+            .build_cache
+            .into_iter()
+            .map(|b| DockerCacheEntry {
+                size: size(&b.size),
+                in_use: b.in_use == "true",
+                shared: b.shared == "true",
+                last_used: parse_time(&b.last_used_at),
+                usage_count: count(&b.usage_count),
+                id: b.id,
+                description: b.description,
+            })
+            .collect(),
+    };
+    d.images.sort_by_key(|i| std::cmp::Reverse(i.size));
+    d.containers.sort_by_key(|i| std::cmp::Reverse(i.size));
+    d.volumes.sort_by_key(|i| std::cmp::Reverse(i.size));
+    d.build_cache.sort_by_key(|i| std::cmp::Reverse(i.size));
+    Some(d)
+}
+
+/// Valor de uma label no formato `chave=valor,chave=valor` do Docker. Uma label sem
+/// valor (`com.docker.volume.anonymous=`) devolve `Some("")`.
+fn label(labels: &str, key: &str) -> Option<String> {
+    labels.split(',').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then(|| v.to_string())
+    })
+}
+
+/// Datas do Docker (`"2026-07-17 13:22:11 -0300 -03"`,
+/// `"2026-03-25 13:49:24.2698 +0000 UTC"`) em segundos Unix; 0 se não reconhecer.
+fn parse_time(s: &str) -> i64 {
+    let mut parts = s.split_whitespace();
+    let (Some(date), Some(time), Some(offset)) = (parts.next(), parts.next(), parts.next()) else {
+        return 0;
+    };
+    let nums =
+        |s: &str, sep: char| -> Option<Vec<i64>> { s.split(sep).map(|n| n.parse().ok()).collect() };
+    let parsed = (|| {
+        let [y, mo, d] = nums(date, '-')?[..] else {
+            return None;
+        };
+        let [h, mi, sec] = nums(time.split('.').next()?, ':')?[..] else {
+            return None;
+        };
+        let sign = match offset.as_bytes().first()? {
+            b'+' => 1,
+            b'-' => -1,
+            _ => return None,
+        };
+        let off: i64 = offset.get(1..5)?.parse().ok()?;
+        let off = sign * ((off / 100) * 3600 + (off % 100) * 60);
+        Some(days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + sec - off)
+    })();
+    parsed.unwrap_or(0)
+}
+
+/// Dias desde 1970-01-01 no calendário gregoriano (algoritmo de Howard Hinnant).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 #[cfg(test)]
@@ -341,5 +604,108 @@ mod tests {
     fn empty_or_garbage_output_is_none() {
         assert_eq!(parse_df(""), None);
         assert_eq!(parse_df("Cannot connect to the Docker daemon"), None);
+    }
+
+    #[test]
+    fn parses_docker_times() {
+        assert_eq!(parse_time("1970-01-01 00:00:00 +0000 UTC"), 0);
+        // 2026-07-17 16:22:11 UTC
+        assert_eq!(parse_time("2026-07-17 13:22:11 -0300 -03"), 1_784_305_331);
+        assert_eq!(
+            parse_time("2026-03-25 13:49:24.269845557 +0000 UTC"),
+            1_774_446_564
+        );
+        assert_eq!(parse_time("N/A"), 0);
+        assert_eq!(parse_time(""), 0);
+    }
+
+    #[test]
+    fn reads_labels() {
+        let labels = "com.docker.compose.project=udrive,com.docker.volume.anonymous=,x=a=b";
+        assert_eq!(
+            label(labels, "com.docker.compose.project").as_deref(),
+            Some("udrive")
+        );
+        assert_eq!(
+            label(labels, "com.docker.volume.anonymous").as_deref(),
+            Some("")
+        );
+        assert_eq!(label(labels, "x").as_deref(), Some("a=b"));
+        assert_eq!(label(labels, "com.docker.compose"), None);
+        assert_eq!(label("", "x"), None);
+    }
+
+    #[test]
+    fn parses_verbose_df() {
+        let out = r#"{"Images":[
+  {"Containers":"0","CreatedAt":"2026-07-17 13:22:11 -0300 -03","ID":"sha256:aa","Repository":"<none>","SharedSize":"0B","Size":"1.2GB","Tag":"<none>"},
+  {"Containers":"1","CreatedAt":"2026-07-17 13:22:11 -0300 -03","ID":"sha256:bb","Repository":"squidfunk/mkdocs-material","SharedSize":"10MB","Size":"302MB","Tag":"latest"}],
+ "Containers":[{"CreatedAt":"2026-10-06 23:34:07 -0300 -03","ID":"d01","Image":"squidfunk/mkdocs-material","Labels":"com.docker.compose.project=20262-grupo05,org.opencontainers.image.title=mkdocs","Names":"semob_df_docs","Size":"113MB","State":"exited","Platform":null}],
+ "Volumes":[
+  {"Labels":"com.docker.volume.anonymous=","Links":"0","Name":"4a92","Size":"316.1MB"},
+  {"Labels":"com.docker.compose.project=udrive","Links":"1","Name":"udrive_postgres_data","Size":"234.1MB"},
+  {"Labels":"","Links":"N/A","Name":"nfs","Size":"N/A"}],
+ "BuildCache":[
+  {"Description":"pulled from docker.io/library/python:3.10-slim","ID":"s4z","InUse":"false","LastUsedAt":"2026-03-25 13:49:24.269845557 +0000 UTC","Shared":"false","Size":"117MB","UsageCount":"1"},
+  {"Description":"[builder 3/5] COPY --from=deps /app/node_modules ./node_modules","ID":"s13","InUse":"true","LastUsedAt":"2026-03-25 13:49:24 +0000 UTC","Shared":"true","Size":"889MB","UsageCount":"6"}]}"#;
+        let d = parse_details(out).unwrap();
+
+        assert_eq!(d.images.len(), 2);
+        assert_eq!(d.images[0].repository, "<none>", "maior primeiro");
+        assert_eq!(d.images[0].size, 1_200_000_000);
+        assert_eq!(d.images[1].containers, 1);
+        assert_eq!(d.images[1].shared_size, 10_000_000);
+        assert_eq!(d.images[1].created, 1_784_305_331);
+
+        let c = &d.containers[0];
+        assert_eq!(c.name, "semob_df_docs");
+        assert_eq!(c.state, "exited");
+        assert_eq!(c.size, 113_000_000);
+        assert_eq!(c.project.as_deref(), Some("20262-grupo05"));
+
+        let names: Vec<_> = d.volumes.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(names, ["4a92", "udrive_postgres_data", "nfs"]);
+        assert!(d.volumes[0].anonymous && d.volumes[0].links == 0);
+        assert!(!d.volumes[1].anonymous);
+        assert_eq!(d.volumes[1].project.as_deref(), Some("udrive"));
+        assert_eq!((d.volumes[2].size, d.volumes[2].links), (0, 0));
+
+        assert_eq!(d.build_cache[0].size, 889_000_000);
+        assert!(d.build_cache[0].in_use && d.build_cache[0].shared);
+        assert_eq!(d.build_cache[0].usage_count, 6);
+        assert!(!d.build_cache[1].in_use);
+        assert_eq!(d.build_cache[1].last_used, 1_774_446_564);
+    }
+
+    #[test]
+    fn verbose_df_tolerates_missing_lists_and_garbage() {
+        assert_eq!(
+            parse_details(r#"{"Images":[]}"#),
+            Some(DockerDetails::default())
+        );
+        assert_eq!(parse_details(""), None);
+        assert_eq!(parse_details("Cannot connect to the Docker daemon"), None);
+    }
+
+    #[test]
+    fn reads_output_larger_than_the_pipe() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "head -c 300000 /dev/zero | tr '\\0' x"]);
+        let out = run_with_timeout(cmd, Duration::from_secs(10)).unwrap();
+        assert_eq!(out.len(), 300_000);
+    }
+
+    #[test]
+    fn kills_command_after_timeout_or_failure() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("5");
+        let start = Instant::now();
+        assert_eq!(run_with_timeout(cmd, Duration::from_millis(100)), None);
+        assert!(start.elapsed() < Duration::from_secs(2));
+
+        assert_eq!(
+            run_with_timeout(Command::new("false"), Duration::from_secs(5)),
+            None
+        );
     }
 }

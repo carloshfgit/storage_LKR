@@ -197,6 +197,67 @@ export function dockerPrune(mode: DockerMode, target: DockerTarget): Promise<Cle
   return invoke("docker_prune", { mode, target, confirm: true });
 }
 
+export interface DockerImage {
+  id: string;
+  /** `<none>` numa imagem sem nome (dangling). */
+  repository: string;
+  tag: string;
+  size: number;
+  /** Camadas que outras imagens também usam; removê-la não libera esta parte. */
+  shared_size: number;
+  /** Containers (rodando ou parados) que usam a imagem. */
+  containers: number;
+  /** Segundos Unix; 0 se o Docker não informar. */
+  created: number;
+}
+
+export interface DockerContainer {
+  id: string;
+  name: string;
+  image: string;
+  /** `running`, `exited`, `created`, `paused`… */
+  state: string;
+  /** Camada gravável do container. */
+  size: number;
+  /** Projeto do Docker Compose. */
+  project: string | null;
+  created: number;
+}
+
+export interface DockerVolume {
+  name: string;
+  size: number;
+  /** Containers que montam o volume; 0 = sem uso. */
+  links: number;
+  /** Criado sem nome; o `docker volume prune` remove só esses. */
+  anonymous: boolean;
+  project: string | null;
+}
+
+export interface DockerCacheEntry {
+  id: string;
+  /** Passo do build (`[builder 3/5] COPY …`, `pulled from …`). */
+  description: string;
+  size: number;
+  in_use: boolean;
+  shared: boolean;
+  last_used: number;
+  usage_count: number;
+}
+
+/** `docker system df -v` de um daemon; cada lista do maior para o menor. */
+export interface DockerDetails {
+  images: DockerImage[];
+  containers: DockerContainer[];
+  volumes: DockerVolume[];
+  build_cache: DockerCacheEntry[];
+}
+
+/** Só leitura; leva uns 5 s (o daemon mede tudo de novo). */
+export function dockerDetails(mode: DockerMode): Promise<DockerDetails> {
+  return invoke("docker_details", { mode });
+}
+
 /** Um item da Lixeira de agora, como o sistema o lista. */
 export interface TrashItem {
   /** O que volta para o Rust em `restoreFromTrash`/`purgeFromTrash`. */

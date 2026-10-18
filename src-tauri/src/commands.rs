@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use scanner::{
-    Category, DEFAULT_DOCKER_TIMEOUT, DiskInfo, DockerMode, DockerTarget, ScanOptions, ScanResult,
-    docker_status, docker_usage,
+    Category, DEFAULT_DOCKER_TIMEOUT, DiskInfo, DockerDetails, DockerMode, DockerTarget,
+    ScanOptions, ScanResult, docker_status, docker_usage,
 };
 use tauri::State;
 use tauri::ipc::Channel;
@@ -134,6 +134,14 @@ pub fn docker_prune(
             |m| docker_usage(m, DEFAULT_DOCKER_TIMEOUT),
         )
         .map_err(|e| e.to_string())
+}
+
+/// Imagens, containers, volumes e build cache do daemon de `mode`, item a item. Só leitura;
+/// o socket é o fixo do modo. Leva uns 5 s, por isso `async`.
+#[tauri::command(async)]
+pub fn docker_details(mode: DockerMode) -> Result<DockerDetails, String> {
+    scanner::docker_details(mode, DEFAULT_DOCKER_TIMEOUT)
+        .ok_or_else(|| "o Docker não respondeu (parado, sem permissão ou demorou demais)".into())
 }
 
 /// Itens da Lixeira de agora, com o tamanho do último scan ou medido na hora.

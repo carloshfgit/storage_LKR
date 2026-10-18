@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-docker-details"
+description = "Enables the docker_details command without any pre-configured scope."
+commands.allow = ["docker_details"]
+
+[[permission]]
+identifier = "deny-docker-details"
+description = "Denies the docker_details command without any pre-configured scope."
+commands.deny = ["docker_details"]

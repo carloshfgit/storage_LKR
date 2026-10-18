@@ -31,6 +31,7 @@
     onback,
     onupdate,
     onopentrash,
+    onopendocker,
   }: {
     segment: Segment;
     result: ScanResult;
@@ -43,6 +44,8 @@
     onupdate: (result: ScanResult) => void;
     /** Abre o detalhe da Lixeira. */
     onopentrash: () => void;
+    /** Abre o detalhe item a item de um daemon Docker. */
+    onopendocker: (mode: DockerMode) => void;
   } = $props();
 
   let files = $state.raw<FileItem[] | null>(null);
@@ -215,7 +218,7 @@
         label: "Volumes",
         item: d.volumes,
         noun: ["volume", "volumes"],
-        hint: "Guardam dados (bancos, uploads) e nunca são removidos pelo app. Veja com docker volume ls.",
+        hint: "Guardam dados (bancos, uploads) e nunca são removidos pelo app. Veja quais são em \"Ver detalhes\".",
       },
       { label: "Build cache", item: d.build_cache, noun: ["entrada", "entradas"] },
     ];
@@ -284,6 +287,7 @@
           {/each}
         </ul>
         <div class="actions">
+          <button onclick={() => onopendocker(daemon.mode)} disabled={busy !== null}>Ver detalhes</button>
           <button
             onclick={() => askPrune(daemon.mode, daemon.usage, "build_cache")}
             disabled={busy !== null || daemon.usage.build_cache.reclaimable === 0}

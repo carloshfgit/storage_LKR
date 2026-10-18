@@ -20,6 +20,7 @@ pub fn run() {
             commands::move_to_trash,
             commands::empty_trash,
             commands::docker_prune,
+            commands::docker_details,
             commands::old_downloads,
             commands::largest_files,
             commands::trash_caches,

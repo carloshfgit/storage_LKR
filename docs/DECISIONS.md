@@ -48,6 +48,7 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D38](#d38) | Docker rootless: socket fixo por daemon, sem contar duas vezes | ✅ | 9 |
 | [D39](#d39) | Sugestões no walk; caches inteiros para a Lixeira | ✅ | 10 |
 | [D41](#d41) | Lixeira com card próprio; itens pelo `id` do sistema | ✅ | 12 |
+| [D42](#d42) | Detalhe do Docker só de leitura, com dicas de comandos | ✅ | 13 |
 
 ---
 
@@ -525,3 +526,28 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 **Limitações:**
 - Bytes restaurados não entram no top-N da categoria até o próximo scan, e uma pasta restaurada não é redistribuída entre as categorias.
 - Itens de lixeiras de outros discos aparecem na lista (o crate lista todas), mas não estão na barra, que é do disco do sistema (D09). Eles vêm marcados como medidos agora.
+
+### D42 — Detalhe do Docker só de leitura, com dicas de comandos <a id="d42"></a>
+**Decisão:**
+- Cada card Docker ganha "Ver detalhes", que abre a lista item a item do daemon: volumes, imagens, containers e build cache, do `docker system df -v --format json`.
+- A lista é consultada **sob demanda**, por um command próprio (`docker_details(mode)`), e não guardada no `ScanResult`.
+- A tela é **só de leitura**. Para liberar espaço, ela mostra dicas montadas a partir da lista ("52 volumes anônimos sem uso, 16,4 GB"), cada uma com o comando para o usuário rodar no terminal e um botão "Copiar".
+- D18 continua valendo: o app não apaga volumes nem containers, e não ganhou botão novo.
+
+**Por quê:**
+- O card só dizia "Volumes 16,7 GB". Nesta máquina, a lista mostra que 52 dos 56 volumes são anônimos e sem uso (16,4 GB), sobras de containers recriados, e que os 4 com nome (bancos de projetos) somam só 0,33 GB. Sem a lista, não dava para saber o que é lixo e o que é dado.
+- Sob demanda: o `-v` leva o mesmo tempo do `df` simples (cerca de 4,5 s), mas a saída tem cerca de 125 KB (252 entradas de build cache, labels dos containers). Guardar isso em cada resultado aumentaria o cache em disco e o evento `docker` para algo que só se vê ao abrir o detalhe. Trocar a consulta do scan pela `-v` também não foi feito: o card e a barra continuam com o `df` simples, que já está testado e é o que o `docker_prune` relê.
+- Dicas em vez de botões: remover um volume com nome ou um container pode perder dados, e o usuário é quem sabe se um banco ainda serve. O comando copiado deixa a decisão com ele, no terminal, onde o próprio `docker` pede confirmação. Para os anônimos, a dica aponta o `docker volume prune`, que desde o Docker 23 remove só volumes anônimos sem uso.
+- No rootless, os comandos levam `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock`, pelo mesmo motivo do socket fixo (D38). A variável vale também para os plugins (`compose`, `buildx`), o que o `--host` não garante.
+- A saída do `-v` passa dos 64 KiB do pipe. A execução do `docker` passou a ler a saída numa thread enquanto espera o processo; esperar o exit antes de ler travaria o comando até o timeout.
+
+**Descartado:**
+- Botão "Remover volumes anônimos sem uso" (`docker volume prune -f`): seguro no Docker 23+, mas num Docker mais antigo o mesmo comando remove também os volumes com nome. Fica para uma etapa própria, que confira a versão do daemon antes.
+- Remoção individual de volume, imagem ou container pela UI: exigiria mandar nomes da UI para a linha de comando, o que D19 evita, e reabriria D18.
+- Mostrar cada camada do build cache agrupada por Dockerfile: o `df -v` não diz de qual projeto é cada entrada. A lista vem por tamanho, com a descrição do passo e o último uso.
+
+**Limitações:**
+- Os tamanhos são os do Docker (tamanho lógico, D15), e o de cada imagem inclui camadas compartilhadas, que a tela indica.
+- Abrir o detalhe durante um scan em segundo plano roda o `docker` junto com o walk, o que o deixa um pouco mais lento (§6.1).
+- Num Docker antigo, sem suporte a `system df -v --format json`, a tela mostra o erro e o card continua como antes.
+

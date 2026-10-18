@@ -14,6 +14,7 @@
     "allow-move-to-trash",
     "allow-empty-trash",
     "allow-docker-prune",
+    "allow-docker-details",
     "allow-old-downloads",
     "allow-largest-files",
     "allow-trash-caches",

@@ -418,6 +418,30 @@ Hoje a Lixeira só aparece dentro do detalhe de Outros, com o total e "Esvaziar 
 
 ---
 
+## Etapa 13 — Detalhe do Docker item a item
+Hoje o card Docker mostra só o total de imagens, containers, volumes e build cache. Não dá para saber quais volumes são esses, nem se são lixo ou dados. Esta etapa acrescenta uma tela só de leitura com cada item e dicas de como liberar espaço pelo terminal (DECISIONS D42).
+- [x] `docker.rs`: `docker_details(mode, timeout) -> Option<DockerDetails>` a partir de `docker system df -v --format json`: imagens (repo, tag, tamanho, compartilhado, containers, criação), containers (nome, imagem, estado, tamanho, projeto do Compose), volumes (nome, tamanho, containers que o montam, anônimo, projeto) e build cache (descrição, tamanho, em uso, último uso, usos). Cada lista do maior para o menor.
+- [x] Execução do `docker` com a saída lida numa thread (`run_with_timeout`): a do `-v` passa do buffer do pipe. O `docker_usage` passa a usar o mesmo caminho.
+- [x] Command `docker_details(mode)` (os 4 passos do CLAUDE.md + wrapper em `api.ts`). Sob demanda, fora do `ScanResult`: o `cache::VERSION` não muda.
+- [x] UI: "Ver detalhes" em cada card Docker abre `DockerDetail.svelte`, com abas por tipo, a lista e o card "Como liberar espaço" com dicas montadas dos itens e o comando para copiar. Volta para Apps/Sistema.
+- [x] Testes: parse do `-v` (labels, anônimo, projeto, `N/A`, datas, ordenação), datas com fuso e fração de segundo, saída maior que o pipe e timeout.
+- [x] Docs: ARCHITECTURE §6.1, §7 e §8; DECISIONS D42.
+
+**Pronto quando:**
+- A aba Volumes mostra a mesma contagem e os mesmos nomes do `docker volume ls`, e o total bate com o card.
+- As dicas mostram os números da máquina e os comandos copiados funcionam no terminal.
+
+**Resultado (17/10/2026):**
+- Nesta máquina, `docker_details(Rootful)` levou 4,7 s e trouxe 1 imagem, 1 container, 56 volumes e 252 entradas de build cache, iguais ao `docker system df -v`. Dos 56 volumes, 52 são anônimos e sem uso (16,4 GB); os 4 com nome (`udrive_postgres_data`, `keep-unb_pgdata`, `keep-unb_pgdata_test`, `udrive_redis_data`) somam cerca de 0,33 GB e vêm com o projeto do Compose.
+- A saída do `-v` tem cerca de 125 KB. Sem a leitura em thread, o `docker` travaria no pipe até o timeout.
+- O `buildx prune` atual usa o `-a` para incluir as imagens internas do frontend, não para "todo o cache". Por isso as dicas de build cache usam `docker builder prune` (com `--filter until=720h` para manter o recente).
+- Workspace: 88 testes passam, clippy limpo, `npm run check` sem erros.
+- ⏳ **Falta a conferência visual**, que precisa ser feita por você:
+  1. Em Apps/Sistema, clicar em "Ver detalhes" no card Docker e conferir as quatro abas.
+  2. Copiar um comando das dicas e conferir que ele cola certo no terminal.
+
+---
+
 ## Backlog (pós-MVP)
 1. Detalhar Apps por Snap, Flatpak e APT, com tamanho por app.
 2. Cards de sugestão: "Downloads antigos", "Caches", "10 maiores arquivos". → **Etapa 10** ✅
