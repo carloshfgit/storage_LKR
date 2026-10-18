@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use scanner::{
-    Category, DEFAULT_DOCKER_TIMEOUT, DiskInfo, DockerTarget, ScanOptions, ScanResult, docker_usage,
+    Category, DEFAULT_DOCKER_TIMEOUT, DiskInfo, DockerMode, DockerTarget, ScanOptions, ScanResult,
+    docker_status, docker_usage,
 };
 use tauri::State;
 use tauri::ipc::Channel;
@@ -34,7 +35,7 @@ pub fn start_scan(
     state
         .start_scan(
             ScanOptions::new(SCAN_ROOT),
-            Box::new(|| docker_usage(DEFAULT_DOCKER_TIMEOUT)),
+            Box::new(|| docker_status(DEFAULT_DOCKER_TIMEOUT)),
             move |event| {
                 // Falha só se a janela fechou; não há a quem avisar.
                 let _ = on_event.send(event);
@@ -88,17 +89,24 @@ pub fn empty_trash(state: State<'_, Arc<AppState>>, confirm: bool) -> Result<Cle
         .map_err(|e| e.to_string())
 }
 
-/// Roda um dos prunes fixos do Docker. Exige `confirm == true`.
+/// Roda um dos prunes fixos no daemon de `mode` (socket fixo, montado no Rust). Exige
+/// `confirm == true`.
 #[tauri::command(async)]
 pub fn docker_prune(
     state: State<'_, Arc<AppState>>,
+    mode: DockerMode,
     target: DockerTarget,
     confirm: bool,
 ) -> Result<Cleanup, String> {
     state
-        .docker_prune(target, confirm, scanner::docker_prune, root_disk, || {
-            docker_usage(DEFAULT_DOCKER_TIMEOUT)
-        })
+        .docker_prune(
+            mode,
+            target,
+            confirm,
+            scanner::docker_prune,
+            root_disk,
+            |m| docker_usage(m, DEFAULT_DOCKER_TIMEOUT),
+        )
         .map_err(|e| e.to_string())
 }
 

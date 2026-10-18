@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use scanner::{Category, DEFAULT_DOCKER_TIMEOUT, ScanOptions, docker_usage, scan};
+use scanner::{Category, DEFAULT_DOCKER_TIMEOUT, DockerMode, ScanOptions, docker_status, scan};
 
 fn main() -> ExitCode {
     let mut root = PathBuf::from("/");
@@ -36,7 +36,7 @@ fn main() -> ExitCode {
     }
 
     // `docker system df` leva segundos: roda em paralelo ao walk.
-    let docker = with_docker.then(|| std::thread::spawn(|| docker_usage(DEFAULT_DOCKER_TIMEOUT)));
+    let docker = with_docker.then(|| std::thread::spawn(|| docker_status(DEFAULT_DOCKER_TIMEOUT)));
 
     let mut result = match scan(&opts, |p| eprint!("\r{:>10} arquivos", p.files)) {
         Ok(r) => r,
@@ -48,7 +48,7 @@ fn main() -> ExitCode {
     let walk_ms = result.elapsed_ms;
     if let Some(handle) = docker {
         eprint!("  aguardando o Docker…");
-        result.apply_docker(handle.join().ok().flatten());
+        result.apply_docker(handle.join().unwrap_or_default());
     }
     eprintln!();
 
@@ -88,7 +88,14 @@ fn main() -> ExitCode {
                 let total = s.bytes + result.docker_bytes + result.unaccounted_bytes;
                 row(c.label(), total, None);
                 row("  ↳ escaneado", s.bytes, Some(s.files));
-                if result.docker.is_some() {
+                if result.rootless_scanned_bytes > 0 {
+                    row(
+                        "    ↳ Docker rootless lido",
+                        result.rootless_scanned_bytes,
+                        None,
+                    );
+                }
+                if result.docker.rootful.is_some() || result.docker.rootless.is_some() {
                     row("  ↳ Docker", result.docker_bytes, None);
                 }
                 row("  ↳ reservado/sem acesso", result.unaccounted_bytes, None);
@@ -118,9 +125,16 @@ fn main() -> ExitCode {
             gb(result.sniffed_bytes)
         );
     }
-    if let Some(d) = &result.docker {
+    for mode in DockerMode::ALL {
+        let Some(d) = result.docker.get(mode) else {
+            continue;
+        };
+        let name = match mode {
+            DockerMode::Rootful => "docker:",
+            DockerMode::Rootless => "docker rootless:",
+        };
         println!(
-            "docker:         {} (imagens {}, containers {}, volumes {}, build cache {}; liberável {})",
+            "{name:<16}{} (imagens {}, containers {}, volumes {}, build cache {}; liberável {})",
             gb(d.total()),
             gb(d.images.size),
             gb(d.containers.size),

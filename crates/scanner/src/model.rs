@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::classify::Classifier;
-use crate::docker::DockerUsage;
+use crate::docker::DockerStatus;
 
 /// Categoria de um arquivo na barra. "Livre" não é uma categoria: vem do `statvfs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -94,9 +94,11 @@ pub struct ScanResult {
     #[serde(skip)]
     pub home: PathBuf,
     /// Preenchido por [`ScanResult::apply_docker`]; a consulta roda à parte porque é lenta.
-    pub docker: Option<DockerUsage>,
+    pub docker: DockerStatus,
     /// Quanto do Docker foi descontado do restante (limitado ao próprio restante).
     pub docker_bytes: u64,
+    /// Lido pelo walk em `~/.local/share/docker` (Docker rootless), já em Apps/Sistema.
+    pub rootless_scanned_bytes: u64,
     /// Usado no disco menos o escaneado e o Docker: dirs sem permissão, metadados e blocos reservados.
     pub unaccounted_bytes: u64,
     pub denied_dirs: u64,
@@ -159,20 +161,30 @@ impl ScanResult {
         self.unaccounted_bytes = disk.used_bytes().saturating_sub(self.scanned_bytes());
         self.docker_bytes = 0;
         self.disk = disk;
-        let usage = self.docker.take();
-        self.apply_docker(usage);
+        let docker = std::mem::take(&mut self.docker);
+        self.apply_docker(docker);
     }
 
     /// Move o uso do Docker do restante para um subitem de Apps/Sistema.
     ///
     /// O Docker relata tamanho lógico, não blocos alocados, então o desconto é limitado
-    /// ao restante para a barra continuar somando 100% do disco. Chamar de novo substitui
-    /// o valor anterior.
-    pub fn apply_docker(&mut self, usage: Option<DockerUsage>) {
+    /// ao restante para a barra continuar somando 100% do disco. Do rootless, só sai do
+    /// restante o que o walk não leu em `~/.local/share/docker` (o resto já está em
+    /// Apps/Sistema). Chamar de novo substitui o valor anterior.
+    pub fn apply_docker(&mut self, docker: DockerStatus) {
         let restante = self.unaccounted_bytes + self.docker_bytes;
-        self.docker_bytes = usage.as_ref().map_or(0, |u| u.total().min(restante));
+        let rootful = docker
+            .rootful
+            .as_ref()
+            .map_or(0, |u| u.total().min(restante));
+        let rootless = docker.rootless.as_ref().map_or(0, |u| {
+            u.total()
+                .saturating_sub(self.rootless_scanned_bytes)
+                .min(restante - rootful)
+        });
+        self.docker_bytes = rootful + rootless;
         self.unaccounted_bytes = restante - self.docker_bytes;
-        self.docker = usage;
+        self.docker = docker;
     }
 }
 
@@ -191,7 +203,7 @@ fn lossy_path<S: Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::docker::DockerItem;
+    use crate::docker::{DockerItem, DockerUsage};
 
     fn result(unaccounted: u64) -> ScanResult {
         ScanResult {
@@ -207,8 +219,9 @@ mod tests {
             sniffed_files: 0,
             sniffed_bytes: 0,
             home: PathBuf::new(),
-            docker: None,
+            docker: DockerStatus::default(),
             docker_bytes: 0,
+            rootless_scanned_bytes: 0,
             unaccounted_bytes: unaccounted,
             denied_dirs: 0,
             files: 0,
@@ -217,13 +230,21 @@ mod tests {
         }
     }
 
-    fn docker(total: u64) -> DockerUsage {
+    fn usage(total: u64) -> DockerUsage {
         DockerUsage {
             images: DockerItem {
                 size: total,
                 ..Default::default()
             },
             ..Default::default()
+        }
+    }
+
+    /// Só o Docker do sistema.
+    fn docker(total: u64) -> DockerStatus {
+        DockerStatus {
+            rootful: Some(usage(total)),
+            rootless: None,
         }
     }
 
@@ -244,24 +265,59 @@ mod tests {
     #[test]
     fn docker_moves_out_of_unaccounted() {
         let mut r = result(100);
-        r.apply_docker(Some(docker(70)));
+        r.apply_docker(docker(70));
         assert_eq!((r.docker_bytes, r.unaccounted_bytes), (70, 30));
+    }
+
+    #[test]
+    fn rootless_only_discounts_what_the_walk_did_not_read() {
+        // 40 do rootless já foram lidos pelo walk (estão em Apps/Sistema); só 60 saem do restante.
+        let mut r = result(100);
+        r.rootless_scanned_bytes = 40;
+        r.apply_docker(DockerStatus {
+            rootful: None,
+            rootless: Some(usage(100)),
+        });
+        assert_eq!((r.docker_bytes, r.unaccounted_bytes), (60, 40));
+
+        // Lido por inteiro: nada sai do restante.
+        r.rootless_scanned_bytes = 150;
+        r.apply_docker(r.docker.clone());
+        assert_eq!((r.docker_bytes, r.unaccounted_bytes), (0, 100));
+    }
+
+    #[test]
+    fn both_daemons_share_the_cap() {
+        let mut r = result(100);
+        r.rootless_scanned_bytes = 10;
+        r.apply_docker(DockerStatus {
+            rootful: Some(usage(70)),
+            rootless: Some(usage(50)),
+        });
+        // Rootful 70; rootless 50 − 10 lidos = 40, limitado aos 30 que sobram.
+        assert_eq!((r.docker_bytes, r.unaccounted_bytes), (100, 0));
+
+        r.apply_docker(DockerStatus {
+            rootful: Some(usage(20)),
+            rootless: Some(usage(50)),
+        });
+        assert_eq!((r.docker_bytes, r.unaccounted_bytes), (60, 40));
     }
 
     #[test]
     fn docker_is_capped_at_unaccounted() {
         let mut r = result(100);
-        r.apply_docker(Some(docker(150)));
+        r.apply_docker(docker(150));
         assert_eq!((r.docker_bytes, r.unaccounted_bytes), (100, 0));
     }
 
     #[test]
     fn reapplying_replaces_previous_value() {
         let mut r = result(100);
-        r.apply_docker(Some(docker(70)));
-        r.apply_docker(Some(docker(20)));
+        r.apply_docker(docker(70));
+        r.apply_docker(docker(20));
         assert_eq!((r.docker_bytes, r.unaccounted_bytes), (20, 80));
-        r.apply_docker(None);
+        r.apply_docker(DockerStatus::default());
         assert_eq!((r.docker_bytes, r.unaccounted_bytes), (0, 100));
     }
 
@@ -334,7 +390,7 @@ mod tests {
     #[test]
     fn set_disk_recomputes_remainder_and_caps_docker() {
         let mut r = scanned();
-        r.apply_docker(Some(docker(450)));
+        r.apply_docker(docker(450));
         assert_eq!((r.docker_bytes, r.unaccounted_bytes), (450, 50));
 
         // Lixeira esvaziada: 40 B a mais livres, e 40 B a menos escaneados.

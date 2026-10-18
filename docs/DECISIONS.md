@@ -45,6 +45,7 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D35](#d35) | Abrir com o último scan e atualizar em segundo plano | ✅ | 7 |
 | [D36](#d36) | Nome "Storage Looker" e pacote só `.deb` | ✅ | 7 |
 | [D37](#d37) | Magic bytes só para arquivos sem extensão no `$HOME` | ✅ | 8 |
+| [D38](#d38) | Docker rootless: socket fixo por daemon, sem contar duas vezes | ✅ | 9 |
 
 ---
 
@@ -452,3 +453,24 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 - Crate `infer`: cobre centenas de formatos de que não precisamos e traz mais uma dependência para cerca de 20 assinaturas.
 - Ler arquivos ZIP para distinguir docx/odt/epub: exigiria ler o diretório central, que fica no fim do arquivo. Isso é caro, e documentos de escritório quase sempre têm extensão.
 - Reclassificar MPEG-TS (`0x47` a cada 188 bytes): é raro no desktop e fácil de confundir (D22).
+
+### D38 — Docker rootless: socket fixo por daemon, sem contar duas vezes <a id="d38"></a>
+**Decisão:**
+- O app consulta até dois daemons, cada um pelo seu socket fixo: `/var/run/docker.sock` (sistema) e `$XDG_RUNTIME_DIR/docker.sock` (rootless). Ambos via `docker --host unix://…`.
+- `~/.local/share/docker` (e `~/.local/share/containers`, do Podman) entram na regra 1: Apps/Sistema e nunca vão para a Lixeira.
+- O walk soma à parte o que leu em `~/.local/share/docker`. Do total do rootless, só a parte que o walk **não** leu sai do restante.
+
+**Por quê:**
+- Sem a regra 1, as camadas do rootless apareciam como **Outros** (pasta oculta) e com checkbox de Lixeira. Apagar camadas à mão corrompe o armazenamento do Docker.
+- O rootless mora no `$HOME`: o walk lê boa parte (arquivos do próprio usuário), mas não o que pertence a subuids mapeados, que cai no restante. Descontar o total do rootless do restante contaria duas vezes o que o walk já leu. Subtrair o lido é a correção mais simples que mantém a barra em 100%. Tamanho lógico contra alocado continua sendo uma aproximação, como no rootful (D15).
+- Socket fixo em vez do contexto atual: o `dockerd-rootless-setuptool.sh` costuma rodar `docker context use rootless`. Com isso, o `docker` sem `--host` passaria a falar com o rootless, e a consulta "do sistema" devolveria o mesmo daemon. Fixar os dois deixa cada um com um papel só, e a UI só escolhe um enum.
+- Sem socket, o `docker` nem é chamado: é o caso da maioria das máquinas, e não custa nada.
+
+**Descartado:**
+- `docker context ls` para descobrir os daemons: depende de configuração do usuário (nomes livres, contextos remotos por SSH/TCP que não são deste disco).
+- `docker info --format '{{.DockerRootDir}}'` para achar a pasta de dados: mais uma chamada lenta por daemon. Vale a pena só quando houver mais de um disco (Etapa 11).
+- Card do Podman: `podman system df` tem outro formato e não há Podman nesta máquina para validar. Por enquanto, a pasta dele só fica protegida.
+
+**Limitações:**
+- Um `data-root` personalizado no `daemon.json` do rootless não é detectado: a pasta conta como dado comum, e o desconto pode contar duas vezes, limitado ao restante.
+- Um rootful com `DOCKER_HOST` ou socket em outro caminho não é encontrado.

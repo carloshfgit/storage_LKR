@@ -11,7 +11,9 @@
     reveal,
     type Cleanup,
     type DockerItem,
+    type DockerMode,
     type DockerTarget,
+    type DockerUsage,
     type FileItem,
     type ScanResult,
   } from "./api";
@@ -47,7 +49,8 @@
   let reload = $state(0);
   const selection = new SvelteSet<string>();
   /** Ação em andamento; enquanto houver uma, as outras ficam travadas. */
-  let busy = $state<"trash" | "empty" | DockerTarget | null>(null);
+  type PruneKey = `${DockerMode}:${DockerTarget}`;
+  let busy = $state<"trash" | "empty" | PruneKey | null>(null);
   let notice = $state<{ kind: "ok" | "error"; text: string; details?: string[] } | null>(null);
   let confirm = $state<(ConfirmRequest & { run: () => void }) | null>(null);
   let sortBy = $state<"size" | "date">("size");
@@ -127,7 +130,7 @@
     }
   }
 
-  async function runCleanup(kind: "empty" | DockerTarget, action: () => Promise<Cleanup>, done: string) {
+  async function runCleanup(kind: "empty" | PruneKey, action: () => Promise<Cleanup>, done: string) {
     busy = kind;
     notice = null;
     try {
@@ -151,22 +154,23 @@
     };
   }
 
-  function askPrune(target: DockerTarget) {
-    const d = result.docker!;
+  function askPrune(mode: DockerMode, d: DockerUsage, target: DockerTarget) {
+    const key: PruneKey = `${mode}:${target}`;
+    const where = mode === "rootless" ? " do Docker rootless" : "";
     confirm =
       target === "build_cache"
         ? {
-            title: `Limpar ${formatBytes(d.build_cache.reclaimable)} de build cache?`,
+            title: `Limpar ${formatBytes(d.build_cache.reclaimable)} de build cache${where}?`,
             message: "O Docker recria o cache quando precisar; os próximos builds podem demorar mais.",
             confirmLabel: "Limpar build cache",
-            run: () => runCleanup(target, () => dockerPrune(target), "Build cache limpo"),
+            run: () => runCleanup(key, () => dockerPrune(mode, target), "Build cache limpo"),
           }
         : {
-            title: `Remover ${formatBytes(d.images.reclaimable)} de imagens não usadas?`,
+            title: `Remover ${formatBytes(d.images.reclaimable)} de imagens não usadas${where}?`,
             message:
               "Imagens que nenhum container usa serão apagadas e precisarão ser baixadas de novo na próxima vez.",
             confirmLabel: "Remover imagens",
-            run: () => runCleanup(target, () => dockerPrune(target), "Imagens removidas"),
+            run: () => runCleanup(key, () => dockerPrune(mode, target), "Imagens removidas"),
           };
   }
 
@@ -176,9 +180,31 @@
     run?.();
   }
 
-  const dockerRows = $derived.by(() => {
-    const d = result.docker;
-    if (!d) return [];
+  /** Um card por daemon presente: o do sistema e o rootless (`~/.local/share/docker`). */
+  const daemons = $derived(
+    (
+      [
+        ["rootful", "Docker"],
+        ["rootless", "Docker rootless"],
+      ] as const
+    ).flatMap(([mode, title]) => {
+      const usage = result.docker[mode];
+      if (!usage) return [];
+      const rows = dockerRows(usage);
+      return [
+        {
+          mode,
+          title,
+          usage,
+          rows,
+          size: rows.reduce((sum, r) => sum + r.item.size, 0),
+          reclaimable: rows.reduce((sum, r) => sum + r.item.reclaimable, 0),
+        },
+      ];
+    }),
+  );
+
+  function dockerRows(d: DockerUsage) {
     const rows: { label: string; item: DockerItem; noun: [string, string]; hint?: string }[] = [
       { label: "Imagens", item: d.images, noun: ["imagem", "imagens"] },
       { label: "Containers", item: d.containers, noun: ["container", "containers"] },
@@ -191,8 +217,7 @@
       { label: "Build cache", item: d.build_cache, noun: ["entrada", "entradas"] },
     ];
     return rows;
-  });
-  const dockerReclaimable = $derived(dockerRows.reduce((sum, r) => sum + r.item.reclaimable, 0));
+  }
 </script>
 
 <!-- Com o diálogo aberto, o Esc é dele: fecha o diálogo, não o detalhe. -->
@@ -230,42 +255,47 @@
       <h2>Docker</h2>
       <p class="muted">Consultando o Docker…</p>
     </section>
-  {:else if result.docker}
-    <section class="card info">
-      <h2>
-        Docker
-        <span>{formatBytes(result.docker_bytes)} · {formatBytes(dockerReclaimable)} liberáveis</span>
-      </h2>
-      <ul class="rows">
-        {#each dockerRows as row (row.label)}
-          <li>
-            <span class="label">
-              {row.label}
-              <small>
-                {formatCount(row.item.count)} {row.noun[row.item.count === 1 ? 0 : 1]}
-                · {formatBytes(row.item.reclaimable)} liberáveis
-              </small>
-              {#if row.hint}<small>{row.hint}</small>{/if}
-            </span>
-            <span class="value">{formatBytes(row.item.size)}</span>
-          </li>
-        {/each}
-      </ul>
-      <div class="actions">
-        <button
-          onclick={() => askPrune("build_cache")}
-          disabled={busy !== null || result.docker.build_cache.reclaimable === 0}
-        >
-          {busy === "build_cache" ? "Limpando…" : "Limpar build cache"}
-        </button>
-        <button
-          onclick={() => askPrune("unused_images")}
-          disabled={busy !== null || result.docker.images.reclaimable === 0}
-        >
-          {busy === "unused_images" ? "Removendo…" : "Remover imagens não usadas"}
-        </button>
-      </div>
-    </section>
+  {:else}
+    {#each daemons as daemon (daemon.mode)}
+      <section class="card info">
+        <h2>
+          {daemon.title}
+          <span>{formatBytes(daemon.size)} · {formatBytes(daemon.reclaimable)} liberáveis</span>
+        </h2>
+        {#if daemon.mode === "rootless"}
+          <p class="muted">Dados em ~/.local/share/docker, de um daemon do próprio usuário.</p>
+        {/if}
+        <ul class="rows">
+          {#each daemon.rows as row (row.label)}
+            <li>
+              <span class="label">
+                {row.label}
+                <small>
+                  {formatCount(row.item.count)} {row.noun[row.item.count === 1 ? 0 : 1]}
+                  · {formatBytes(row.item.reclaimable)} liberáveis
+                </small>
+                {#if row.hint}<small>{row.hint}</small>{/if}
+              </span>
+              <span class="value">{formatBytes(row.item.size)}</span>
+            </li>
+          {/each}
+        </ul>
+        <div class="actions">
+          <button
+            onclick={() => askPrune(daemon.mode, daemon.usage, "build_cache")}
+            disabled={busy !== null || daemon.usage.build_cache.reclaimable === 0}
+          >
+            {busy === `${daemon.mode}:build_cache` ? "Limpando…" : "Limpar build cache"}
+          </button>
+          <button
+            onclick={() => askPrune(daemon.mode, daemon.usage, "unused_images")}
+            disabled={busy !== null || daemon.usage.images.reclaimable === 0}
+          >
+            {busy === `${daemon.mode}:unused_images` ? "Removendo…" : "Remover imagens não usadas"}
+          </button>
+        </div>
+      </section>
+    {/each}
   {/if}
 
   {#if result.unaccounted_bytes > 0}

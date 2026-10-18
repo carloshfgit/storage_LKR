@@ -1,8 +1,10 @@
 //! Uso de disco do Docker, que fica em `/var/lib/docker` (só root) e por isso
 //! não aparece no walk. O daemon informa os tamanhos sem root para quem está
-//! no grupo `docker`.
+//! no grupo `docker`. O Docker rootless guarda os dados em `~/.local/share/docker`
+//! e tem um daemon próprio, consultado à parte (ARCHITECTURE §6.1).
 
 use std::io::Read;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -47,12 +49,87 @@ impl DockerUsage {
     }
 }
 
-/// Roda `docker system df --format json`. `None` se o Docker não estiver instalado,
-/// o daemon estiver parado, faltar permissão ou o comando estourar o `timeout`.
-pub fn docker_usage(timeout: Duration) -> Option<DockerUsage> {
-    let mut child = Command::new("docker")
+/// Qual daemon: o do sistema ou o rootless do usuário.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerMode {
+    Rootful,
+    Rootless,
+}
+
+impl DockerMode {
+    pub const ALL: [DockerMode; 2] = [DockerMode::Rootful, DockerMode::Rootless];
+
+    /// Socket fixo de cada daemon, montado aqui e nunca vindo da UI. O contexto atual do
+    /// `docker` é ignorado de propósito: depois de `docker context use rootless`, o comando
+    /// sem `--host` falaria com o rootless, e o mesmo daemon seria contado duas vezes.
+    pub fn socket(self) -> PathBuf {
+        match self {
+            DockerMode::Rootful => PathBuf::from("/var/run/docker.sock"),
+            DockerMode::Rootless => std::env::var_os("XDG_RUNTIME_DIR")
+                .filter(|v| !v.is_empty())
+                .map_or_else(
+                    || PathBuf::from(format!("/run/user/{}", rustix::process::getuid().as_raw())),
+                    PathBuf::from,
+                )
+                .join("docker.sock"),
+        }
+    }
+
+    fn command(self) -> Command {
+        let mut cmd = Command::new("docker");
+        cmd.arg("--host")
+            .arg(format!("unix://{}", self.socket().display()))
+            .stdin(Stdio::null());
+        cmd
+    }
+}
+
+/// Uso dos dois daemons; `None` onde não há daemon acessível.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerStatus {
+    pub rootful: Option<DockerUsage>,
+    pub rootless: Option<DockerUsage>,
+}
+
+impl DockerStatus {
+    pub fn get(&self, mode: DockerMode) -> Option<&DockerUsage> {
+        match mode {
+            DockerMode::Rootful => self.rootful.as_ref(),
+            DockerMode::Rootless => self.rootless.as_ref(),
+        }
+    }
+
+    pub fn set(&mut self, mode: DockerMode, usage: Option<DockerUsage>) {
+        match mode {
+            DockerMode::Rootful => self.rootful = usage,
+            DockerMode::Rootless => self.rootless = usage,
+        }
+    }
+}
+
+/// Consulta os dois daemons em paralelo, cada um com o seu `timeout`.
+pub fn docker_status(timeout: Duration) -> DockerStatus {
+    std::thread::scope(|s| {
+        let rootless = s.spawn(|| docker_usage(DockerMode::Rootless, timeout));
+        DockerStatus {
+            rootful: docker_usage(DockerMode::Rootful, timeout),
+            rootless: rootless.join().ok().flatten(),
+        }
+    })
+}
+
+/// Roda `docker system df --format json` no daemon de `mode`. `None` se o socket não
+/// existir, o Docker não estiver instalado, o daemon estiver parado, faltar permissão ou
+/// o comando estourar o `timeout`.
+pub fn docker_usage(mode: DockerMode, timeout: Duration) -> Option<DockerUsage> {
+    // Sem socket, nem roda o `docker`: o rootless não existe na maioria das máquinas.
+    if !mode.socket().exists() {
+        return None;
+    }
+    let mut child = mode
+        .command()
         .args(["system", "df", "--format", "json"])
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -98,11 +175,12 @@ impl DockerTarget {
     }
 }
 
-/// Roda a limpeza e espera terminar, sem timeout: um prune grande leva minutos.
-pub fn docker_prune(target: DockerTarget) -> Result<(), String> {
-    let out = Command::new("docker")
+/// Roda a limpeza no daemon de `mode` e espera terminar, sem timeout: um prune grande
+/// leva minutos.
+pub fn docker_prune(mode: DockerMode, target: DockerTarget) -> Result<(), String> {
+    let out = mode
+        .command()
         .args(target.args())
-        .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("não foi possível rodar o docker: {e}"))?;
     if out.status.success() {
@@ -220,6 +298,43 @@ mod tests {
             assert!(!args.iter().any(|a| a.contains("volume")), "{args:?}");
             assert!(!args.contains(&"--volumes"));
         }
+    }
+
+    #[test]
+    fn sockets_are_fixed_per_mode() {
+        assert_eq!(
+            DockerMode::Rootful.socket(),
+            PathBuf::from("/var/run/docker.sock")
+        );
+        let rootless = DockerMode::Rootless.socket();
+        assert!(
+            rootless.is_absolute() && rootless.ends_with("docker.sock"),
+            "{rootless:?}"
+        );
+        assert_ne!(rootless, DockerMode::Rootful.socket());
+
+        let args: Vec<_> = DockerMode::Rootful
+            .command()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["--host", "unix:///var/run/docker.sock"]);
+    }
+
+    #[test]
+    fn status_get_and_set_by_mode() {
+        let usage = DockerUsage {
+            images: DockerItem {
+                size: 3,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut s = DockerStatus::default();
+        s.set(DockerMode::Rootless, Some(usage.clone()));
+        assert_eq!(s.get(DockerMode::Rootless), Some(&usage));
+        assert_eq!(s.get(DockerMode::Rootful), None);
+        assert_eq!(s.rootless, Some(usage));
     }
 
     #[test]

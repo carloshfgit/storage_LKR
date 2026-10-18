@@ -45,6 +45,12 @@ export interface DockerUsage {
   build_cache: DockerItem;
 }
 
+/** Daemon do sistema ou rootless do usuário; cada um tem o seu socket fixo no Rust. */
+export type DockerMode = "rootful" | "rootless";
+
+/** `null` onde não há daemon acessível. */
+export type DockerStatus = Record<DockerMode, DockerUsage | null>;
+
 export interface ScanResult {
   disk: DiskInfo;
   categories: Record<Category, CategoryStats>;
@@ -53,8 +59,11 @@ export interface ScanResult {
   /** Arquivos sem extensão classificados pelo conteúdo, já contados nas categorias. */
   sniffed_files: number;
   sniffed_bytes: number;
-  docker: DockerUsage | null;
+  docker: DockerStatus;
+  /** Parte do restante atribuída ao Docker (os dois daemons). */
   docker_bytes: number;
+  /** Lido pelo walk em `~/.local/share/docker`, já dentro de Apps/Sistema. */
+  rootless_scanned_bytes: number;
   unaccounted_bytes: number;
   denied_dirs: number;
   files: number;
@@ -67,7 +76,7 @@ export interface ScanResult {
 export type ScanEvent =
   | { kind: "progress"; bytes: Record<Category, number>; files: number }
   | { kind: "done"; result: ScanResult }
-  | { kind: "docker"; usage: DockerUsage | null; docker_bytes: number; unaccounted_bytes: number }
+  | { kind: "docker"; docker: DockerStatus; docker_bytes: number; unaccounted_bytes: number }
   | { kind: "cancelled" }
   | { kind: "error"; message: string };
 
@@ -131,7 +140,7 @@ export function emptyTrash(): Promise<Cleanup> {
   return invoke("empty_trash", { confirm: true });
 }
 
-/** `build_cache` → `docker builder prune -f`; `unused_images` → `docker image prune -a -f`. */
-export function dockerPrune(target: DockerTarget): Promise<Cleanup> {
-  return invoke("docker_prune", { target, confirm: true });
+/** `build_cache` → `docker builder prune -f`; `unused_images` → `docker image prune -a -f`, no daemon de `mode`. */
+export function dockerPrune(mode: DockerMode, target: DockerTarget): Promise<Cleanup> {
+  return invoke("docker_prune", { mode, target, confirm: true });
 }

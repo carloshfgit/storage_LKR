@@ -76,7 +76,9 @@
   function appsNote(r: ScanResult): string | undefined {
     const unaccounted = `${formatBytes(r.unaccounted_bytes)} reservado/sem acesso`;
     if (dockerPending) return `Inclui ${unaccounted} · consultando Docker…`;
-    if (r.docker_bytes > 0) return `Inclui ${formatBytes(r.docker_bytes)} do Docker e ${unaccounted}`;
+    // O rootless lido pelo walk já está no escaneado, mas também é Docker.
+    const docker = r.docker_bytes + r.rootless_scanned_bytes;
+    if (docker > 0) return `Inclui ${formatBytes(docker)} do Docker e ${unaccounted}`;
     return r.unaccounted_bytes > 0 ? `Inclui ${unaccounted}` : undefined;
   }
 
@@ -96,7 +98,7 @@
         break;
       case "docker":
         if (result) {
-          result = { ...result, docker: e.usage, docker_bytes: e.docker_bytes, unaccounted_bytes: e.unaccounted_bytes };
+          result = { ...result, docker: e.docker, docker_bytes: e.docker_bytes, unaccounted_bytes: e.unaccounted_bytes };
         }
         dockerPending = false;
         break;

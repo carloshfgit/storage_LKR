@@ -26,7 +26,14 @@ const HOME_APP_DIRS: &[&str] = &[
     ".var/app",
     ".local/share/flatpak",
     ".local/share/Steam",
+    ROOTLESS_DOCKER_DIR,
+    // Podman rootless: mesmo motivo, apagar camadas à mão corrompe o armazenamento.
+    ".local/share/containers",
 ];
+
+/// Dados do Docker rootless. O walk soma à parte o que lê aqui, para o desconto do
+/// Docker no restante não contar duas vezes (ARCHITECTURE §6.1).
+const ROOTLESS_DOCKER_DIR: &str = ".local/share/docker";
 
 /// Pastas convencionais de apps portáteis, logo abaixo do `$HOME`. Diferente de
 /// `HOME_APP_DIRS`, o usuário pode apagar o que estiver aqui.
@@ -40,6 +47,7 @@ pub struct Classifier {
     home: Option<PathBuf>,
     home_app_dirs: Vec<PathBuf>,
     trash: Option<PathBuf>,
+    rootless_docker: Option<PathBuf>,
 }
 
 impl Classifier {
@@ -52,6 +60,7 @@ impl Classifier {
                 .flat_map(|h| HOME_APP_DIRS.iter().map(|d| h.join(d)))
                 .collect(),
             trash: home.as_ref().map(|h| h.join(TRASH_DIR)),
+            rootless_docker: home.as_ref().map(|h| h.join(ROOTLESS_DOCKER_DIR)),
             home,
         }
     }
@@ -134,6 +143,13 @@ impl Classifier {
         self.trash
             .as_ref()
             .is_some_and(|t| is_under(path.as_os_str().as_bytes(), t.as_os_str().as_bytes()))
+    }
+
+    /// Dentro de `~/.local/share/docker` (Docker rootless; também é regra 1).
+    pub fn in_rootless_docker(&self, path: &Path) -> bool {
+        self.rootless_docker
+            .as_ref()
+            .is_some_and(|d| is_under(path.as_os_str().as_bytes(), d.as_os_str().as_bytes()))
     }
 }
 
@@ -378,6 +394,23 @@ mod tests {
     fn unknown_or_missing_extension_is_other() {
         assert_eq!(cat("/home/u/Makefile"), Category::Other);
         assert_eq!(cat("/home/u/arquivo.extensaolonga"), Category::Other);
+    }
+
+    #[test]
+    fn rootless_container_storage_is_app() {
+        let c = classifier();
+        for p in [
+            "/home/u/.local/share/docker/overlay2/abc/diff/foto.jpg",
+            "/home/u/.local/share/containers/storage/x",
+        ] {
+            assert_eq!(cat(p), Category::AppsSystem, "{p}");
+            assert!(c.is_app_path(Path::new(p)), "{p}");
+        }
+        assert!(c.in_rootless_docker(Path::new("/home/u/.local/share/docker")));
+        assert!(c.in_rootless_docker(Path::new("/home/u/.local/share/docker/volumes/v")));
+        assert!(!c.in_rootless_docker(Path::new("/home/u/.local/share/containers/x")));
+        assert!(!c.in_rootless_docker(Path::new("/home/u/.local/share/docker-old/x")));
+        assert!(!c.in_rootless_docker(Path::new("/var/lib/docker/x")));
     }
 
     #[test]

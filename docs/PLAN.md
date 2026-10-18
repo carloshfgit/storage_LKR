@@ -240,25 +240,40 @@ Hoje um arquivo visível no `$HOME` sem extensão cai em Outros (regra 7). D13 d
 
 ## Etapa 9 — Docker rootless (backlog 7)
 No modo rootless, os dados ficam em `~/.local/share/docker`, dentro do `$HOME`. Hoje o walk os conta como **Outros** (regra 4, pasta oculta) e os arquivos poderiam aparecer como "podem ir para a Lixeira". Parte da árvore pertence a subuids mapeados, e o walk não consegue ler. Esse pedaço cai no "sem acesso", enquanto o `docker system df` (do contexto padrão) não informa nada sobre ele.
-- [ ] `classify.rs`: `~/.local/share/docker` (e `~/.local/share/containers`, do Podman) entram na **regra 1**: Apps/Sistema, `is_app_path` verdadeiro e nunca vão para a Lixeira. Teste junto com os casos da Etapa 2.
-- [ ] `walk.rs`: somar à parte os bytes lidos sob esse prefixo (`rootless_scanned_bytes`). Eles continuam dentro de Apps/Sistema, mas o detalhe passa a mostrá-los como Docker.
-- [ ] `docker.rs`: descobrir os daemons acessíveis sem root:
+- [x] `classify.rs`: `~/.local/share/docker` (e `~/.local/share/containers`, do Podman) entram na **regra 1**: Apps/Sistema, `is_app_path` verdadeiro e nunca vão para a Lixeira. Teste junto com os casos da Etapa 2.
+- [x] `walk.rs`: somar à parte os bytes lidos sob esse prefixo (`rootless_scanned_bytes`). Eles continuam dentro de Apps/Sistema, mas o detalhe passa a mostrá-los como Docker.
+- [x] `docker.rs`: descobrir os daemons acessíveis sem root:
   - rootful pelo socket padrão;
   - rootless por `unix://$XDG_RUNTIME_DIR/docker.sock`, quando existir, via `docker --host … system df` com host fixo montado no Rust, nunca vindo da UI.
-  - `docker_usage` passa a devolver `DockerUsage` com `rootful: Option<…>` e `rootless: Option<…>`, ou uma lista com o modo de cada um. Os dois são consultados em paralelo e cada um tem seu timeout.
-- [ ] `model.rs::apply_docker`:
+  - `docker_status` devolve `DockerStatus { rootful, rootless }`, com `Option<DockerUsage>` em cada um. Os dois são consultados em paralelo e cada um tem seu timeout. Na implementação, o rootful também ganhou socket fixo (`/var/run/docker.sock`), para não ser confundido com o rootless depois de um `docker context use rootless`.
+- [x] `model.rs::apply_docker`:
   - o rootful continua descontado do restante (limitado a ele);
   - do rootless, só a parte **não lida** pelo walk (`total − rootless_scanned_bytes`) sai do restante, também limitada, para não contar duas vezes;
   - a barra continua em 100%. Atualizar os testes de `apply_docker`/`set_disk`.
-- [ ] `docker_prune`: `DockerTarget` ganha o modo (`rootful`/`rootless`) e os argumentos continuam fixos (`--host` montado no Rust). Volumes continuam sem botão (D18).
-- [ ] UI: o card Docker mostra uma seção por daemon ("Docker" e "Docker rootless"), cada uma com os seus botões. Sem nenhum daemon, o card some, como hoje.
-- [ ] `cache::VERSION` incrementado, porque o formato de `DockerUsage` muda. `api.ts` espelha os tipos novos.
-- [ ] Testes com Docker falso: só rootful, só rootless, os dois juntos, e rootless com parte já lida pelo walk (sem contar duas vezes). Um arquivo sob `~/.local/share/docker` é recusado pelo `move_to_trash`.
-- [ ] Docs: ARCHITECTURE §5 (regra 1) e §6.1; DECISIONS D38 (por que socket fixo e não `docker context`, e a regra de não contar duas vezes).
+- [x] `docker_prune`: `DockerTarget` ganha o modo (`rootful`/`rootless`) e os argumentos continuam fixos (`--host` montado no Rust). Volumes continuam sem botão (D18).
+- [x] UI: um card por daemon ("Docker" e "Docker rootless"), cada um com os seus botões. Sem nenhum daemon, não aparece nenhum, como hoje.
+- [x] `cache::VERSION` incrementado, porque o formato de `DockerUsage` muda. `api.ts` espelha os tipos novos.
+- [x] Testes com Docker falso: só rootful, só rootless, os dois juntos, e rootless com parte já lida pelo walk (sem contar duas vezes). Um arquivo sob `~/.local/share/docker` é recusado pelo `move_to_trash`.
+- [x] Docs: ARCHITECTURE §5 (regra 1) e §6.1; DECISIONS D38 (por que socket fixo e não `docker context`, e a regra de não contar duas vezes).
 
 **Pronto quando:**
 - Com Docker rootless instalado (`dockerd-rootless-setuptool.sh install`), o card mostra o uso rootless, `~/.local/share/docker` não aparece mais em Outros e scan + Docker + sem acesso continua = `df`.
 - Sem rootless, nada muda em relação à Etapa 7.
+
+**Resultado (17/10/2026):**
+- `ScanResult.docker` virou `DockerStatus { rootful, rootless }` e ganhou `rootless_scanned_bytes`. O evento `docker` traz `docker` no lugar de `usage`, `docker_prune` recebe `mode` e o `cache::VERSION` foi para 3. O `Done` passou a levar o resultado num `Box` (o clippy apontou o tamanho do enum), e o JSON não muda.
+- `docker_prune` recusa um modo sem daemon no último resultado (`NoDocker`) e relê só o daemon limpo.
+- Sem rootless, nada mudou. O CLI em `/` mostra o mesmo Docker de antes pelo socket fixo (75,80 GB, 75,50 GB liberáveis), e o walk continua em cerca de 2–3 s.
+- 9 testes novos:
+  - regra 1 para `~/.local/share/{docker,containers}`;
+  - `rootless_scanned_bytes` no walk;
+  - `apply_docker` com só rootless, com os dois daemons e com tudo já lido;
+  - sockets fixos e `DockerStatus`;
+  - ciclo completo da ponte com os dois daemons;
+  - prune por modo, recusa sem daemon e falha sem mexer no resultado;
+  - arquivo do rootless recusado pelo `move_to_trash`.
+- Workspace: 62 testes passam, clippy limpo, `npm run check` sem erros.
+- ⏳ **Falta a conferência com um rootless de verdade**, que nesta máquina não está configurado (só as ferramentas estão instaladas). Ativar com `dockerd-rootless-setuptool.sh install`, rodar `target/release/scan /` e conferir a linha "docker rootless:", o "Docker rootless lido" e scan + Docker + sem acesso = `df`.
 
 ---
 
@@ -342,4 +357,4 @@ Hoje o app só escaneia `/` e não cruza filesystems (D07). Com `/home` numa par
 4. Modo privilegiado via `pkexec` para escanear o que hoje é "sem acesso".
 5. Detecção por magic bytes para arquivos sem extensão. → **Etapa 8** ✅
 6. Suporte a múltiplos discos e partições (seletor no header). → **Etapa 11**
-7. Docker rootless. → **Etapa 9**
+7. Docker rootless. → **Etapa 9** ✅

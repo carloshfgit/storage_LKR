@@ -42,7 +42,7 @@ storage_LKR/
 │       ├── disk.rs            # statvfs → DiskInfo
 │       ├── walk.rs            # walk paralelo + agregação
 │       ├── classify.rs        # regras caminho/extensão → Category
-│       ├── docker.rs          # `docker system df` → DockerUsage (opcional)
+│       ├── docker.rs          # `docker system df` por daemon → DockerStatus (opcional)
 │       └── bin/scan.rs        # CLI p/ benchmark e validação
 ├── src-tauri/
 │   ├── Cargo.toml  tauri.conf.json
@@ -92,8 +92,9 @@ pub struct ScanResult {
     trash_files: u64,                     // arquivos dentro da Lixeira, já contados em Other
     sniffed_files: u64, sniffed_bytes: u64, // sem extensão, classificados pelo conteúdo (§5, regra 6b)
     home: PathBuf,                        // $HOME da classificação; não serializado
-    docker: Option<DockerUsage>,          // preenchido depois, por apply_docker (§6.1)
-    docker_bytes: u64,                    // parte do restante atribuída ao Docker
+    docker: DockerStatus,                 // { rootful, rootless }: preenchido depois, por apply_docker (§6.1)
+    docker_bytes: u64,                    // parte do restante atribuída ao Docker (os dois daemons)
+    rootless_scanned_bytes: u64,          // lido pelo walk em ~/.local/share/docker, já em AppsSystem
     unaccounted_bytes: u64,               // "Reservado / sem acesso" → somado em AppsSystem
     denied_dirs: u64,
     elapsed_ms: u64,
@@ -134,7 +135,7 @@ Métodos usados pelas ações de limpeza (§7), todos mantendo a barra em 100%:
 
 | # | Regra | Categoria |
 |---|---|---|
-| 1 | Prefixos de sistema e de apps gerenciados: `/usr`, `/opt`, `/boot`, `/etc`, `/bin`, `/sbin`, `/lib*`, `/var/lib/{snapd,flatpak,apt,dpkg}`, `/var/cache/apt` e, em `$HOME`, `~/snap`, `~/.var/app`, `~/.local/share/{flatpak,Steam}` | **Apps/Sistema** (bloqueia limpeza) |
+| 1 | Prefixos de sistema e de apps gerenciados: `/usr`, `/opt`, `/boot`, `/etc`, `/bin`, `/sbin`, `/lib*`, `/var/lib/{snapd,flatpak,apt,dpkg}`, `/var/cache/apt` e, em `$HOME`, `~/snap`, `~/.var/app`, `~/.local/share/{flatpak,Steam,docker,containers}` | **Apps/Sistema** (bloqueia limpeza) |
 | 2 | `~/.local/share/Trash/**` | **Outros** (conta também em `trash_bytes`) |
 | 3 | **App portátil** no `$HOME`: arquivo `*.AppImage`; primeiro componente `Applications`, `Apps`, `Aplicativos` ou `bin`; ou o par de componentes `resources/app`, `resources/app.asar` ou `resources/app.asar.unpacked` (Electron) | **Apps/Sistema** (pode ser limpo) |
 | 4 | Dentro de `$HOME` com qualquer componente oculto (`.cache`, `.mozilla`, `.config`…) | **Outros** |
@@ -213,11 +214,18 @@ pub struct DockerUsage { images: DockerItem, containers: DockerItem, volumes: Do
 // total() = Σ size; reclaimable() = Σ reclaimable
 ```
 
-- `docker_usage(timeout)` roda o comando com timeout de 20 s (`DEFAULT_DOCKER_TIMEOUT`). Se o binário não existir, o daemon estiver parado ou faltar permissão, o resultado é `None` e o app segue sem Docker, sem erro.
+- `docker_usage(mode, timeout)` roda o comando com timeout de 20 s (`DEFAULT_DOCKER_TIMEOUT`). Se o binário não existir, o daemon estiver parado ou faltar permissão, o resultado é `None` e o app segue sem Docker, sem erro.
+- **Dois daemons (Etapa 9, DECISIONS D38).** `DockerMode` = `Rootful` | `Rootless`, e cada um tem o seu **socket fixo**, passado como `docker --host unix://…`: `/var/run/docker.sock` para o do sistema e `$XDG_RUNTIME_DIR/docker.sock` (ou `/run/user/<uid>/docker.sock`) para o rootless. O contexto atual do `docker` é ignorado: depois de `docker context use rootless`, o comando sem `--host` falaria com o rootless, e o mesmo daemon apareceria duas vezes. Socket inexistente vira `None` sem nem rodar o `docker`. `docker_status(timeout)` consulta os dois em paralelo e devolve `DockerStatus { rootful, rootless }`.
 - **O `scan()` não espera o Docker.** O comando leva cerca de 5,2 s nesta máquina, mais que o walk inteiro (cerca de 2,2 s). Quem chama roda os dois e depois aplica `ScanResult::apply_docker(usage)`. Rodar os dois juntos deixa o walk mais lento (4 a 5 s), porque o daemon varre `/var/lib/docker` ao mesmo tempo. Por isso o app (Etapa 3) dispara a consulta **depois** do `Done`: a barra fecha em cerca de 2 s e o card Docker chega num evento próprio.
 - Os tamanhos vêm como texto em unidades decimais (`"58.68GB"`, `"113.1MB"`, `"0B"`) e são convertidos para bytes. A porcentagem entre parênteses do `Reclaimable` é descartada.
 - O Docker relata tamanho lógico, que não é exatamente o espaço alocado. Por isso `apply_docker` limita o valor: `docker_bytes = min(Σ docker, restante)`, e depois `restante −= docker_bytes`. A barra continua somando 100%. Chamar de novo substitui o valor anterior (útil depois de um `docker_prune`).
-- Na UI, o Docker é um subitem de Apps/Sistema ("Docker — 97 GB, 75 GB liberáveis"), separado de "Reservado / sem acesso".
+- **Rootless sem contar duas vezes:** os dados ficam em `~/.local/share/docker`, dentro do `$HOME`. O walk lê o que pertence ao usuário e soma em `rootless_scanned_bytes`, que fica em Apps/Sistema pela regra 1. O que pertence a subuids mapeados não é lido e cai no restante. Por isso, do rootless só sai do restante `total − rootless_scanned_bytes`, limitado ao que sobrou depois do rootful:
+  ```
+  rootful  = min(Σ rootful, restante)
+  rootless = min(Σ rootless − rootless_scanned_bytes, restante − rootful)
+  docker_bytes = rootful + rootless
+  ```
+- Na UI, o Docker é um subitem de Apps/Sistema ("Docker — 97 GB, 75 GB liberáveis"), separado de "Reservado / sem acesso". A nota da legenda soma `docker_bytes + rootless_scanned_bytes`. No detalhe há um card por daemon presente ("Docker" e "Docker rootless"), cada um com o total relatado pelo próprio daemon.
 
 ---
 
@@ -233,7 +241,7 @@ pub struct DockerUsage { images: DockerItem, containers: DockerItem, volumes: Do
 | `move_to_trash` | `(paths: Vec<PathBuf>) -> TrashReport` | Validação abaixo. Usa `trash::delete` (padrão freedesktop, restaurável pelo Nautilus). `TrashReport` = movidos, bytes, recusados com o motivo e o `ScanResult` atualizado |
 | `empty_trash` | `(confirm: bool) -> Cleanup` | Exige `confirm == true`. `trash::os_limited::list` + `purge_all` (todas as lixeiras do usuário, como o Nautilus). `Cleanup` = bytes liberados (diferença do `statvfs`) e o `ScanResult` atualizado |
 | `reveal` | `(path: PathBuf) -> ()` | Só arquivos do último scan (`AppState::contains_file`), depois `tauri_plugin_opener::reveal_item_in_dir` (D-Bus `FileManager1.ShowItems` → Nautilus com o arquivo selecionado). `async`, porque a chamada D-Bus bloqueia |
-| `docker_prune` | `(target: DockerTarget, confirm: bool) -> Cleanup` | `DockerTarget` = `BuildCache` \| `UnusedImages`. Roda o comando fixo sem timeout (um prune grande leva minutos), relê o `docker system df` e devolve como o `empty_trash` |
+| `docker_prune` | `(mode: DockerMode, target: DockerTarget, confirm: bool) -> Cleanup` | `DockerTarget` = `BuildCache` \| `UnusedImages`. Recusa um `mode` sem daemon no último resultado. Roda o comando fixo no socket de `mode`, sem timeout (um prune grande leva minutos), relê só aquele daemon e devolve como o `empty_trash` |
 
 Status: todos ✅. `disk_info`, `start_scan`, `cancel_scan` e `category_files` na Etapa 3, `reveal` na 5 e as ações de limpeza na 6. Os commands que tocam no disco são `async`, para não travar a janela.
 
@@ -241,8 +249,8 @@ Status: todos ✅. `disk_info`, `start_scan`, `cancel_scan` e `category_files` n
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ScanEvent {
     Progress(ScanProgress),                       // { kind: "progress", bytes, files }
-    Done { result: ScanResult },
-    Docker { usage: Option<DockerUsage>, docker_bytes: u64, unaccounted_bytes: u64 },
+    Done { result: Box<ScanResult> },             // Box: bem maior que os outros eventos
+    Docker { docker: DockerStatus, docker_bytes: u64, unaccounted_bytes: u64 },
     Cancelled,
     Error { message: String },
 }
@@ -257,7 +265,7 @@ AppState { last: Mutex<Option<ScanResult>>, cancel: Arc<AtomicBool>, running: At
 ```
 
 - Gerenciado como `Arc<AppState>`, porque a thread do scan precisa dele depois que o command retorna.
-- `start_scan(opts, docker, send)` recebe a consulta ao Docker e o destino dos eventos como parâmetros. O command passa `docker_usage` e o `Channel`; os testes passam um Docker falso e um `mpsc`. Assim, o ciclo inteiro é testado com `cargo test`, sem janela (DECISIONS D24).
+- `start_scan(opts, docker, send)` recebe a consulta ao Docker e o destino dos eventos como parâmetros. O command passa `docker_status` e o `Channel`; os testes passam um Docker falso e um `mpsc`. Assim, o ciclo inteiro é testado com `cargo test`, sem janela (DECISIONS D24).
 - `running` volta a `false` logo no `Done`. Um novo scan pode começar enquanto o Docker do anterior ainda responde. `generation` garante que esse resultado antigo seja descartado em vez de sobrescrever o novo.
 - `cancel` é zerado **antes** do command retornar, então um `cancel_scan` imediatamente depois já vale.
 
@@ -277,7 +285,7 @@ AppState { last: Mutex<Option<ScanResult>>, cancel: Arc<AtomicBool>, running: At
 
   Caminhos que falham são recusados com o motivo e listados no `TrashReport`; os outros seguem (DECISIONS D33).
 - Nunca há `remove_file` direto. O único apagamento permanente é `empty_trash`, que exige confirmação explícita.
-- `docker_prune` só executa comandos fixos, sem argumento vindo da UI: `docker builder prune -f` e `docker image prune -a -f`. **Volumes nunca são apagados pelo app**, porque guardam dados (bancos, uploads); eles só aparecem com o tamanho e a dica `docker volume ls`.
+- `docker_prune` só executa comandos fixos, sem argumento vindo da UI: `docker --host <socket fixo> builder prune -f` e `docker --host <socket fixo> image prune -a -f`. A UI só escolhe o modo (um enum); o socket é montado no Rust. Os dados do rootless (`~/.local/share/docker`) e do Podman (`~/.local/share/containers`) são regra 1, então nunca vão para a Lixeira. **Volumes nunca são apagados pelo app**, porque guardam dados (bancos, uploads); eles só aparecem com o tamanho e a dica `docker volume ls`.
 - **Permissões:** o `build.rs` declara os commands no `AppManifest`. Com isso, o Tauri passa a exigir a permissão `allow-<command>` de cada um, em vez de liberar todos os commands registrados. `capabilities/default.json` lista só `core:default` e essas permissões. O `opener:default` do template foi removido e nenhuma permissão do opener é dada à janela: o `reveal` é um command próprio, que valida o caminho antes de chamar o plugin pelo Rust (DECISIONS D25, D31).
 - **Caminhos não UTF-8** (válidos no Linux) são serializados com perdas (`�`) para não derrubar o resultado inteiro (DECISIONS D26). As ações sobre esses arquivos são recusadas, já que o caminho recebido de volta não é o real: ele não consta no último scan. A UI também desabilita o checkbox deles.
 
@@ -290,7 +298,7 @@ AppState { last: Mutex<Option<ScanResult>>, cancel: Arc<AtomicBool>, running: At
 | `routes/+page.svelte` | Orquestra o estado (`idle` / `scanning` / `done` / `cancelled` / `error`), monta os segmentos e alterna entre a tela principal e o detalhe. A tela principal fica escondida, não desmontada, para a barra não refazer a animação na volta. Escaneia ao abrir |
 | `StorageBar.svelte` | Barra única, em ordem fixa: as 6 categorias, a faixa "ainda não contado" e "Livre" na ponta direita. Cada largura é um `Tween` (600 ms, `cubicOut`) redirecionado a cada `progress`. Vãos de 2px com a cor do card separam os segmentos. Clicar num segmento abre o detalhe. Hover ou foco mostra um tooltip com nome, tamanho e porcentagem, inclusive em "Livre" |
 | `Legend.svelte` | Linhas com bolinha de cor, nome, tamanho e porcentagem do disco, ordenadas por bytes (`animate:flip`) e com "Livre" por último. Apps/Sistema traz a composição: Docker e reservado/sem acesso |
-| `CategoryDetail.svelte` | Aberto ao clicar num segmento da barra ou numa linha da legenda (só com um resultado completo). Mostra o total, a porcentagem e a contagem, e lista o top-N de `category_files`, ordenado por tamanho ou por data. Em Outros aparece o card "Lixeira"; em Apps/Sistema, os cards "Docker" (imagens, containers, volumes e build cache, cada um com tamanho, quantidade e liberável; some sem Docker) e "Reservado / sem acesso". Voltar: botão ou `Esc`. Checkbox nos arquivos com `trashable`, barra fixa no rodapé com o total selecionado e "Mover para a Lixeira". Card Lixeira com "Esvaziar Lixeira"; card Docker com "Limpar build cache" e "Remover imagens não usadas", sem botão para volumes. As ações destrutivas passam pelo `ConfirmDialog`, com o tamanho no título. O resultado aparece num aviso: o que foi movido ou liberado, e os recusados com o motivo |
+| `CategoryDetail.svelte` | Aberto ao clicar num segmento da barra ou numa linha da legenda (só com um resultado completo). Mostra o total, a porcentagem e a contagem, e lista o top-N de `category_files`, ordenado por tamanho ou por data. Em Outros aparece o card "Lixeira"; em Apps/Sistema, um card por daemon, "Docker" e "Docker rootless" (imagens, containers, volumes e build cache, cada um com tamanho, quantidade e liberável; some sem aquele daemon) e "Reservado / sem acesso". Voltar: botão ou `Esc`. Checkbox nos arquivos com `trashable`, barra fixa no rodapé com o total selecionado e "Mover para a Lixeira". Card Lixeira com "Esvaziar Lixeira"; cada card Docker com "Limpar build cache" e "Remover imagens não usadas" do seu daemon, sem botão para volumes. As ações destrutivas passam pelo `ConfirmDialog`, com o tamanho no título. O resultado aparece num aviso: o que foi movido ou liberado, e os recusados com o motivo |
 | `ConfirmDialog.svelte` | `<dialog>` modal. Esc cancela |
 | `FileRow.svelte` | Nome, pasta abreviada (`~/…`, via `homeDir()`), tamanho, data relativa e o botão "Abrir na pasta". Desabilitado para nomes não UTF-8, que chegam com `�` (D26) |
 | `api.ts` | `startScan(onEvent)` com `new Channel<ScanEvent>()` e wrappers tipados |
@@ -339,4 +347,4 @@ O último `ScanResult` é salvo em `$XDG_CACHE_HOME/storage-lkr/last.json` (norm
 - Cards de sugestão ("Downloads > 90 dias", "Caches", "Maiores arquivos").
 - Atualização incremental com inotify ou fanotify.
 - Modo privilegiado via `pkexec` para zerar o "sem acesso".
-- Docker em modo rootless (`~/.local/share/docker`, já dentro do `$HOME`) e Podman (`podman system df`).
+- Podman (`podman system df`). Hoje `~/.local/share/containers` só é marcado como app (regra 1), sem card próprio.

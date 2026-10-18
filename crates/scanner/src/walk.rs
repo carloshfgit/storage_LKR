@@ -64,6 +64,7 @@ struct Counted {
     ino: u64,
     nlink: u64,
     in_trash: bool,
+    in_rootless_docker: bool,
     /// A categoria veio do conteúdo, não do caminho.
     sniffed: bool,
 }
@@ -127,6 +128,7 @@ pub fn scan(
                     ino: meta.ino(),
                     nlink: meta.nlink(),
                     in_trash: walk_classifier.in_trash(&path),
+                    in_rootless_docker: walk_classifier.in_rootless_docker(&path),
                     sniffed,
                 });
             }
@@ -167,6 +169,9 @@ pub fn scan(
             agg.sniffed_files += 1;
             agg.sniffed_bytes += c.bytes;
         }
+        if c.in_rootless_docker {
+            agg.rootless_scanned_bytes += c.bytes;
+        }
         if c.in_trash {
             agg.trash_bytes += c.bytes;
             agg.trash_files += u64::from(!is_dir);
@@ -188,6 +193,7 @@ pub fn scan(
     let trash_bytes = agg.trash_bytes;
     let trash_files = agg.trash_files;
     let (sniffed_files, sniffed_bytes) = (agg.sniffed_files, agg.sniffed_bytes);
+    let rootless_scanned_bytes = agg.rootless_scanned_bytes;
     let categories = agg.finish();
     let scanned: u64 = categories.values().map(|c| c.bytes).sum();
 
@@ -200,8 +206,9 @@ pub fn scan(
         sniffed_files,
         sniffed_bytes,
         home: opts.home.clone(),
-        docker: None,
+        docker: Default::default(),
         docker_bytes: 0,
+        rootless_scanned_bytes,
         denied_dirs,
         files,
         elapsed_ms: started.elapsed().as_millis() as u64,
@@ -228,6 +235,7 @@ struct Aggregator {
     trash_files: u64,
     sniffed_files: u64,
     sniffed_bytes: u64,
+    rootless_scanned_bytes: u64,
     /// Min-heap: o topo é o menor dos N maiores, descartado quando aparece um maior.
     top: [BinaryHeap<Reverse<TopItem>>; Category::COUNT],
 }
@@ -243,6 +251,7 @@ impl Aggregator {
             trash_files: 0,
             sniffed_files: 0,
             sniffed_bytes: 0,
+            rootless_scanned_bytes: 0,
             top: Default::default(),
         }
     }
@@ -456,6 +465,26 @@ mod tests {
         assert_eq!(off.categories[&Category::Photos].files, 0);
         assert_eq!(off.sniffed_files, 0);
         assert_eq!(off.scanned_bytes(), r.scanned_bytes());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rootless_docker_data_is_counted_apart() {
+        let dir = temp_dir("rootless");
+        let layer = dir.join(".local/share/docker/overlay2/abc/diff");
+        fs::create_dir_all(&layer).unwrap();
+        write(&layer.join("foto.jpg"), 40_000);
+        write(&dir.join("foto.jpg"), 8_000);
+
+        let mut opts = ScanOptions::new(&dir);
+        opts.home = dir.clone();
+        let r = scan(&opts, |_| {}).unwrap();
+        let apps = &r.categories[&Category::AppsSystem];
+        assert_eq!(apps.top[0].path, layer.join("foto.jpg"));
+        // Arquivo e diretórios do rootless contam à parte, sem sair de Apps/Sistema.
+        assert!(r.rootless_scanned_bytes >= 40_000 && r.rootless_scanned_bytes <= apps.bytes);
+        assert_eq!(r.categories[&Category::Photos].files, 1);
 
         fs::remove_dir_all(&dir).unwrap();
     }

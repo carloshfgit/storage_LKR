@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use scanner::{DockerUsage, ScanError, ScanOptions, ScanProgress, ScanResult, scan};
+use scanner::{DockerStatus, ScanError, ScanOptions, ScanProgress, ScanResult, scan};
 use serde::Serialize;
 
 pub use cache::default_path as default_cache_path;
@@ -21,12 +21,13 @@ pub use cleanup::{Cleanup, FileItem, TrashReport};
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ScanEvent {
     Progress(ScanProgress),
+    /// Em `Box`: o resultado é bem maior que os outros eventos (o JSON não muda).
     Done {
-        result: ScanResult,
+        result: Box<ScanResult>,
     },
     /// Chega depois do `done`: `docker system df` leva ~5 s e não pode atrasar a barra.
     Docker {
-        usage: Option<DockerUsage>,
+        docker: DockerStatus,
         docker_bytes: u64,
         unaccounted_bytes: u64,
     },
@@ -42,7 +43,7 @@ pub enum StartError {
     AlreadyRunning,
 }
 
-pub type DockerQuery = Box<dyn FnOnce() -> Option<DockerUsage> + Send>;
+pub type DockerQuery = Box<dyn FnOnce() -> DockerStatus + Send>;
 
 #[derive(Default)]
 pub struct AppState {
@@ -92,7 +93,9 @@ impl AppState {
                     state.persist(&result);
                     *last = Some(result.clone());
                     drop(last);
-                    send(ScanEvent::Done { result });
+                    send(ScanEvent::Done {
+                        result: Box::new(result),
+                    });
                 }
                 Err(ScanError::Cancelled) => return send(ScanEvent::Cancelled),
                 Err(e) => {
@@ -102,16 +105,16 @@ impl AppState {
                 }
             }
 
-            let usage = docker();
+            let docker = docker();
             let mut last = state.lock_last();
             let Some(result) = last.as_mut() else { return };
             if state.generation.load(Ordering::SeqCst) != generation {
                 return;
             }
-            result.apply_docker(usage.clone());
+            result.apply_docker(docker.clone());
             state.persist(result);
             send(ScanEvent::Docker {
-                usage,
+                docker,
                 docker_bytes: result.docker_bytes,
                 unaccounted_bytes: result.unaccounted_bytes,
             });
@@ -159,7 +162,7 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use scanner::{Category, DockerItem};
+    use scanner::{Category, DockerItem, DockerUsage};
 
     use super::*;
 
@@ -179,15 +182,21 @@ mod tests {
         opts
     }
 
-    fn fake_docker(total: u64) -> DockerQuery {
-        Box::new(move || {
-            Some(DockerUsage {
-                images: DockerItem {
-                    size: total,
-                    ..Default::default()
-                },
+    fn usage(total: u64) -> DockerUsage {
+        DockerUsage {
+            images: DockerItem {
+                size: total,
                 ..Default::default()
-            })
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Só o Docker do sistema, com `total` bytes.
+    fn fake_docker(total: u64) -> DockerQuery {
+        Box::new(move || DockerStatus {
+            rootful: Some(usage(total)),
+            rootless: None,
         })
     }
 
@@ -305,13 +314,10 @@ mod tests {
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let slow_docker: DockerQuery = Box::new(move || {
             release_rx.recv().unwrap();
-            Some(DockerUsage {
-                images: DockerItem {
-                    size: 999,
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
+            DockerStatus {
+                rootful: Some(usage(999)),
+                rootless: None,
+            }
         });
         let tx1 = tx.clone();
         state
@@ -332,6 +338,48 @@ mod tests {
         // Dá tempo para o Docker antigo terminar e confirma que ele não sobrescreveu nada.
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
         assert_eq!(state.last_result().unwrap().docker_bytes, 7);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rootless_docker_is_not_counted_twice() {
+        let dir = temp_home("rootless");
+        let layer = dir.join(".local/share/docker/overlay2/abc");
+        std::fs::create_dir_all(&layer).unwrap();
+        std::fs::write(layer.join("camada"), vec![0u8; 50_000]).unwrap();
+
+        let state = Arc::new(AppState::default());
+        let (tx, rx) = mpsc::channel();
+        let both: DockerQuery = Box::new(|| DockerStatus {
+            rootful: Some(usage(1_000)),
+            rootless: Some(usage(10_000_000)),
+        });
+        state
+            .start_scan(options(&dir), both, move |e| tx.send(e).unwrap())
+            .unwrap();
+        let events = collect(&rx);
+        let ScanEvent::Docker {
+            docker,
+            docker_bytes,
+            ..
+        } = events.last().unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(docker.rootful.is_some() && docker.rootless.is_some());
+
+        let last = state.last_result().unwrap();
+        assert!(last.rootless_scanned_bytes >= 50_000);
+        // O lido pelo walk fica em Apps/Sistema; só o resto do rootless sai do restante,
+        // e o total continua fechando com o disco.
+        let expected = (1_000 + 10_000_000 - last.rootless_scanned_bytes)
+            .min(last.docker_bytes + last.unaccounted_bytes);
+        assert_eq!(*docker_bytes, expected);
+        assert_eq!(
+            last.scanned_bytes() + last.docker_bytes + last.unaccounted_bytes,
+            last.disk.used_bytes().max(last.scanned_bytes())
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -8,7 +8,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
-use scanner::{Category, Classifier, DiskInfo, DockerTarget, DockerUsage, FileEntry, ScanResult};
+use scanner::{
+    Category, Classifier, DiskInfo, DockerMode, DockerTarget, DockerUsage, FileEntry, ScanResult,
+};
 use serde::Serialize;
 
 use super::AppState;
@@ -21,6 +23,8 @@ pub enum ActionError {
     Busy,
     #[error("a ação precisa de confirmação")]
     NotConfirmed,
+    #[error("esse Docker não foi encontrado na última varredura")]
+    NoDocker,
     #[error("falha ao ler o disco: {0}")]
     Disk(#[from] io::Error),
     #[error("{0}")]
@@ -124,20 +128,30 @@ impl AppState {
         self.measured_cleanup(confirm, purge, disk, |r, ()| r.clear_trash())
     }
 
-    /// Limpa build cache ou imagens sem uso e relê o Docker para atualizar o card.
+    /// Limpa build cache ou imagens sem uso no daemon de `mode` e relê só ele para
+    /// atualizar o card.
     pub fn docker_prune(
         &self,
+        mode: DockerMode,
         target: DockerTarget,
         confirm: bool,
-        run: impl FnOnce(DockerTarget) -> Result<(), String>,
+        run: impl FnOnce(DockerMode, DockerTarget) -> Result<(), String>,
         disk: impl Fn() -> io::Result<DiskInfo>,
-        docker: impl FnOnce() -> Option<DockerUsage>,
+        docker: impl FnOnce(DockerMode) -> Option<DockerUsage>,
     ) -> Result<Cleanup, ActionError> {
+        if confirm
+            && self
+                .lock_last()
+                .as_ref()
+                .is_some_and(|r| r.docker.get(mode).is_none())
+        {
+            return Err(ActionError::NoDocker);
+        }
         self.measured_cleanup(
             confirm,
-            || run(target).map(|()| docker()),
+            || run(mode, target).map(|()| docker(mode)),
             disk,
-            |r, usage| r.docker = usage,
+            |r, usage| r.docker.set(mode, usage),
         )
     }
 
@@ -214,7 +228,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::sync::Arc;
 
-    use scanner::{DockerItem, ScanOptions, scan};
+    use scanner::{DockerItem, DockerStatus, ScanOptions, scan};
 
     use super::*;
 
@@ -240,6 +254,7 @@ mod tests {
             home.join("doc.pdf"),
             home.join(".local/share/Trash/files/velho.mp4"),
             home.join("snap/app/musica.mp3"),
+            home.join(".local/share/docker/volumes/db/_data/dump.pdf"),
             dir.join("fora.jpg"),
         ];
         for f in &files {
@@ -283,6 +298,7 @@ mod tests {
         let fora = f.dir.join("fora.jpg");
         let lixeira = f.home.join(".local/share/Trash/files/velho.mp4");
         let snap = f.home.join("snap/app/musica.mp3");
+        let rootless = f.home.join(".local/share/docker/volumes/db/_data/dump.pdf");
         let inventado = f.home.join("inventado.jpg");
         let before = f.state.last_result().unwrap();
         let photos_before = before.categories[&Category::Photos].bytes;
@@ -296,6 +312,7 @@ mod tests {
                     fora.clone(),
                     lixeira.clone(),
                     snap.clone(),
+                    rootless.clone(),
                     inventado.clone(),
                 ],
                 |p| {
@@ -311,6 +328,10 @@ mod tests {
         assert_eq!(reason(&report, &lixeira), "já está na Lixeira");
         assert_eq!(
             reason(&report, &snap),
+            "pertence ao sistema ou a um app instalado"
+        );
+        assert_eq!(
+            reason(&report, &rootless),
             "pertence ao sistema ou a um app instalado"
         );
         assert_eq!(reason(&report, &inventado), "não está na última varredura");
@@ -438,63 +459,108 @@ mod tests {
         assert!(cleanup.result.find_file(&lixeira).is_none());
     }
 
+    fn usage(images: u64) -> DockerUsage {
+        DockerUsage {
+            images: DockerItem {
+                size: images,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Fixture com os dois daemons no último resultado.
+    fn with_docker(f: &Fixture) {
+        f.state.lock_last().as_mut().unwrap().docker = DockerStatus {
+            rootful: Some(usage(10)),
+            rootless: Some(usage(20)),
+        };
+    }
+
     #[test]
     fn docker_prune_runs_target_and_refreshes_usage() {
         let f = fixture("docker");
+        with_docker(&f);
         let available = Cell::new(100);
         let ran = Cell::new(None);
 
         let err = f.state.docker_prune(
+            DockerMode::Rootless,
             DockerTarget::BuildCache,
             false,
-            |t| {
-                ran.set(Some(t));
+            |m, t| {
+                ran.set(Some((m, t)));
                 Ok(())
             },
             fake_disk(&available),
-            || None,
+            |_| None,
         );
         assert!(matches!(err, Err(ActionError::NotConfirmed)));
         assert_eq!(ran.get(), None);
 
-        let fresh = DockerUsage {
-            images: DockerItem {
-                size: 5,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
         let cleanup = f
             .state
             .docker_prune(
+                DockerMode::Rootless,
                 DockerTarget::UnusedImages,
                 true,
-                |t| {
-                    ran.set(Some(t));
+                |m, t| {
+                    ran.set(Some((m, t)));
                     available.set(700);
                     Ok(())
                 },
                 fake_disk(&available),
-                || Some(fresh.clone()),
+                |m| {
+                    assert_eq!(m, DockerMode::Rootless, "relê só o daemon limpo");
+                    Some(usage(5))
+                },
             )
             .unwrap();
-        assert_eq!(ran.get(), Some(DockerTarget::UnusedImages));
+        assert_eq!(
+            ran.get(),
+            Some((DockerMode::Rootless, DockerTarget::UnusedImages))
+        );
         assert_eq!(cleanup.freed_bytes, 600);
-        assert_eq!(cleanup.result.docker, Some(fresh.clone()));
-        assert_eq!(f.state.last_result().unwrap().docker, Some(fresh));
+        let expected = DockerStatus {
+            rootful: Some(usage(10)),
+            rootless: Some(usage(5)),
+        };
+        assert_eq!(cleanup.result.docker, expected);
+        assert_eq!(f.state.last_result().unwrap().docker, expected);
+    }
+
+    #[test]
+    fn prune_of_missing_daemon_is_refused() {
+        let f = fixture("prune-missing");
+        let available = Cell::new(100);
+        let err = f.state.docker_prune(
+            DockerMode::Rootful,
+            DockerTarget::BuildCache,
+            true,
+            |_, _| panic!("não deveria rodar o docker"),
+            fake_disk(&available),
+            |_| panic!("não deveria reler o Docker"),
+        );
+        assert!(matches!(err, Err(ActionError::NoDocker)));
     }
 
     #[test]
     fn failed_prune_leaves_result_untouched() {
         let f = fixture("prune-fail");
+        with_docker(&f);
         let available = Cell::new(100);
         let err = f.state.docker_prune(
+            DockerMode::Rootful,
             DockerTarget::BuildCache,
             true,
-            |_| Err("daemon parado".into()),
+            |_, _| Err("daemon parado".into()),
             fake_disk(&available),
-            || panic!("não deveria reler o Docker"),
+            |_| panic!("não deveria reler o Docker"),
         );
         assert!(matches!(err, Err(ActionError::Failed(m)) if m == "daemon parado"));
+        assert_eq!(
+            f.state.last_result().unwrap().docker.rootful,
+            Some(usage(10))
+        );
     }
 }
