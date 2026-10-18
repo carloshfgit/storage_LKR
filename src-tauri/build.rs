@@ -10,6 +10,9 @@ const COMMANDS: &[&str] = &[
     "move_to_trash",
     "empty_trash",
     "docker_prune",
+    "old_downloads",
+    "largest_files",
+    "trash_caches",
 ];
 
 fn main() {

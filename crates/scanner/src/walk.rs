@@ -14,6 +14,7 @@ use crate::classify::Classifier;
 use crate::disk::disk_info;
 use crate::model::{Category, CategoryStats, FileEntry, ScanProgress, ScanResult};
 use crate::sniff::{MIN_SNIFF_BYTES, sniff};
+use crate::suggest::{Suggester, SuggestionsAgg, config_dir, download_dir};
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -34,17 +35,23 @@ pub struct ScanOptions {
     pub threads: usize,
     /// Lê os magic bytes dos arquivos sem extensão no `$HOME` (regra 6b).
     pub sniff: bool,
+    /// Pasta de Downloads, para a sugestão "Downloads antigos"; `None` desliga.
+    pub downloads: Option<PathBuf>,
     pub cancel: Arc<AtomicBool>,
 }
 
 impl ScanOptions {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let home: PathBuf = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
         Self {
             root: root.into(),
-            home: std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default(),
+            downloads: (!home.as_os_str().is_empty())
+                .then(|| download_dir(&home, &config_dir(&home)))
+                .flatten(),
+            home,
             top_n: 200,
             // stat é limitado por I/O: mais threads que núcleos mantém a fila do SSD cheia.
             threads: threads * 2,
@@ -67,6 +74,8 @@ struct Counted {
     in_rootless_docker: bool,
     /// A categoria veio do conteúdo, não do caminho.
     sniffed: bool,
+    old_download: bool,
+    in_cache: bool,
 }
 
 type Walk = WalkDirGeneric<((), Option<Counted>)>;
@@ -78,6 +87,7 @@ pub fn scan(
     mut on_progress: impl FnMut(&ScanProgress),
 ) -> Result<ScanResult, ScanError> {
     let started = Instant::now();
+    let now = unix_now();
     let io_err = |source| ScanError::Io {
         path: opts.root.clone(),
         source,
@@ -90,6 +100,8 @@ pub fn scan(
     let classifier = Arc::new(Classifier::new(&opts.home));
     let walk_classifier = Arc::clone(&classifier);
     let use_sniff = opts.sniff;
+    let suggester = Suggester::new(&opts.home, opts.downloads.clone(), now);
+    let walk_suggester = suggester.clone();
     let walk = Walk::new(&opts.root)
         .skip_hidden(false)
         .follow_links(false)
@@ -121,20 +133,24 @@ pub fn scan(
                     Some(c) => (c, false),
                     None => by_content().map_or((Category::Other, false), |c| (c, true)),
                 };
+                let modified = meta.mtime();
                 child.client_state = Some(Counted {
                     category,
                     bytes: meta.blocks() * 512,
-                    modified: meta.mtime(),
+                    modified,
                     ino: meta.ino(),
                     nlink: meta.nlink(),
                     in_trash: walk_classifier.in_trash(&path),
                     in_rootless_docker: walk_classifier.in_rootless_docker(&path),
                     sniffed,
+                    old_download: walk_suggester.is_old_download(&path, meta.is_file(), modified),
+                    in_cache: walk_suggester.in_cache(&path),
                 });
             }
         });
 
     let mut agg = Aggregator::new(opts.top_n);
+    let mut suggestions = SuggestionsAgg::new(suggester, opts.top_n);
     agg.add_bytes(classifier.classify(&opts.root), root_meta.blocks() * 512);
 
     let mut seen_hardlinks: HashSet<u64> = HashSet::new();
@@ -171,6 +187,14 @@ pub fn scan(
         }
         if c.in_rootless_docker {
             agg.rootless_scanned_bytes += c.bytes;
+        }
+        if c.old_download {
+            suggestions.add_old_download(c.category, c.bytes, c.modified, || {
+                entry.parent_path.join(&entry.file_name)
+            });
+        }
+        if c.in_cache {
+            suggestions.add_cache(&entry.parent_path, &entry.file_name, c.bytes, !is_dir);
         }
         if c.in_trash {
             agg.trash_bytes += c.bytes;
@@ -211,11 +235,16 @@ pub fn scan(
         rootless_scanned_bytes,
         denied_dirs,
         files,
+        suggestions: suggestions.finish(),
         elapsed_ms: started.elapsed().as_millis() as u64,
-        finished_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64),
+        finished_at: unix_now(),
     })
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Item do heap de maiores arquivos, ordenado por tamanho.
@@ -485,6 +514,78 @@ mod tests {
         // Arquivo e diretórios do rootless contam à parte, sem sair de Apps/Sistema.
         assert!(r.rootless_scanned_bytes >= 40_000 && r.rootless_scanned_bytes <= apps.bytes);
         assert_eq!(r.categories[&Category::Photos].files, 1);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn set_age(path: &Path, days: u64) {
+        let when = SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60);
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+
+    #[test]
+    fn collects_old_downloads_and_caches() {
+        let dir = temp_dir("suggest");
+        let downloads = dir.join("Downloads");
+        for d in [
+            downloads.join("sub"),
+            dir.join(".cache/pip"),
+            dir.join(".cache/mozilla/perfil"),
+        ] {
+            fs::create_dir_all(d).unwrap();
+        }
+        write(&downloads.join("velho.iso"), 40_000);
+        write(&downloads.join("sub/velha.jpg"), 20_000);
+        write(&downloads.join("novo.iso"), 60_000);
+        set_age(&downloads.join("velho.iso"), 120);
+        set_age(&downloads.join("sub/velha.jpg"), 91);
+        write(&dir.join(".cache/pip/a"), 10_000);
+        write(&dir.join(".cache/mozilla/perfil/b"), 30_000);
+        write(&dir.join(".cache/solto"), 5_000);
+
+        let mut opts = ScanOptions::new(&dir);
+        opts.home = dir.clone();
+        opts.downloads = Some(downloads.clone());
+        let r = scan(&opts, |_| {}).unwrap();
+        let s = &r.suggestions;
+
+        assert_eq!(s.downloads_dir.as_deref(), Some(downloads.as_path()));
+        let old = &s.old_downloads;
+        assert_eq!(old.files, 2);
+        let paths: Vec<_> = old.top.iter().map(|f| f.entry.path.clone()).collect();
+        assert_eq!(
+            paths,
+            [downloads.join("velho.iso"), downloads.join("sub/velha.jpg")]
+        );
+        assert_eq!(old.top[1].category, Category::Photos);
+        assert_eq!(
+            old.bytes,
+            old.top.iter().map(|f| f.entry.bytes).sum::<u64>()
+        );
+
+        let names: Vec<_> = s.caches.iter().map(|c| c.path.clone()).collect();
+        assert_eq!(
+            names,
+            [
+                dir.join(".cache/mozilla"),
+                dir.join(".cache/pip"),
+                dir.join(".cache/solto")
+            ]
+        );
+        assert_eq!(s.caches[0].files, 1);
+        // Inclui os diretórios: mozilla/ e perfil/ também ocupam blocos.
+        assert!(s.caches[0].bytes > 30_000);
+
+        // Sem pasta de Downloads, nada de downloads antigos; os caches continuam.
+        opts.downloads = None;
+        let r = scan(&opts, |_| {}).unwrap();
+        assert_eq!(r.suggestions.old_downloads.files, 0);
+        assert_eq!(r.suggestions.caches.len(), 3);
 
         fs::remove_dir_all(&dir).unwrap();
     }

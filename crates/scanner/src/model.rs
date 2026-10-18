@@ -79,6 +79,56 @@ pub struct CategoryStats {
     pub top: Vec<FileEntry>,
 }
 
+/// Arquivo sugerido para limpeza. Guarda a categoria em que foi contado, porque pode não
+/// estar na lista dos maiores dela e a barra precisa saber de onde tirar os bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuggestedFile {
+    #[serde(flatten)]
+    pub entry: FileEntry,
+    pub category: Category,
+}
+
+/// Arquivos da pasta de Downloads sem modificação há mais de `OLD_DOWNLOAD_DAYS` dias.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OldDownloads {
+    pub bytes: u64,
+    pub files: u64,
+    /// Os maiores, em ordem decrescente de tamanho.
+    pub top: Vec<SuggestedFile>,
+}
+
+/// Item direto de `~/.cache` (normalmente a pasta de cache de um app), com tudo o que há dentro.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheEntry {
+    #[serde(serialize_with = "lossy_path")]
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub files: u64,
+}
+
+/// Sugestões de limpeza calculadas no walk (ARCHITECTURE §4).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Suggestions {
+    /// Pasta de Downloads do `user-dirs.dirs`; `None` se não houver.
+    #[serde(serialize_with = "lossy_opt_path")]
+    pub downloads_dir: Option<PathBuf>,
+    /// mtime (segundos Unix) abaixo do qual um download conta como antigo.
+    pub old_before: i64,
+    pub old_downloads: OldDownloads,
+    /// Os maiores itens de `~/.cache`, em ordem decrescente.
+    pub caches: Vec<CacheEntry>,
+}
+
+impl Suggestions {
+    fn is_old_download(&self, entry: &FileEntry) -> bool {
+        entry.modified < self.old_before
+            && self
+                .downloads_dir
+                .as_ref()
+                .is_some_and(|d| entry.path.starts_with(d))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
     pub disk: DiskInfo,
@@ -103,6 +153,7 @@ pub struct ScanResult {
     pub unaccounted_bytes: u64,
     pub denied_dirs: u64,
     pub files: u64,
+    pub suggestions: Suggestions,
     pub elapsed_ms: u64,
     /// Fim do scan em segundos Unix: a UI mostra "há 2 h" para um resultado do cache.
     pub finished_at: i64,
@@ -111,6 +162,18 @@ pub struct ScanResult {
 impl ScanResult {
     pub fn scanned_bytes(&self) -> u64 {
         self.categories.values().map(|c| c.bytes).sum()
+    }
+
+    /// Se `path` é um arquivo listado no último scan: nos maiores de uma categoria ou nos
+    /// downloads antigos. Toda ação sobre um arquivo vindo da UI passa por aqui.
+    pub fn contains_file(&self, path: &Path) -> bool {
+        self.find_file(path).is_some()
+            || self
+                .suggestions
+                .old_downloads
+                .top
+                .iter()
+                .any(|f| f.entry.path == path)
     }
 
     /// Categoria e posição de `path` na lista dos maiores.
@@ -124,21 +187,52 @@ impl ScanResult {
         })
     }
 
-    /// Contabiliza um arquivo movido para a Lixeira: sai da categoria e da lista dos
-    /// maiores e entra em `Other`/`trash_bytes`. O espaço usado não muda, então o
-    /// restante e o Docker ficam como estão.
+    /// Contabiliza um arquivo movido para a Lixeira: sai da categoria, da lista dos
+    /// maiores e dos downloads antigos, e entra em `Other`/`trash_bytes`. O espaço usado
+    /// não muda, então o restante e o Docker ficam como estão.
     pub fn record_trashed(&mut self, path: &Path) -> Option<FileEntry> {
-        let (cat, i) = self.find_file(path)?;
+        let (cat, entry) = match self.find_file(path) {
+            Some((cat, i)) => (cat, self.categories.get_mut(&cat)?.top.remove(i)),
+            None => {
+                let old = &self.suggestions.old_downloads;
+                let f = old.top.iter().find(|f| f.entry.path == path)?;
+                (f.category, f.entry.clone())
+            }
+        };
         let stats = self.categories.get_mut(&cat)?;
-        let entry = stats.top.remove(i);
         stats.bytes = stats.bytes.saturating_sub(entry.bytes);
         stats.files = stats.files.saturating_sub(1);
+
+        if self.suggestions.is_old_download(&entry) {
+            let old = &mut self.suggestions.old_downloads;
+            old.bytes = old.bytes.saturating_sub(entry.bytes);
+            old.files = old.files.saturating_sub(1);
+            old.top.retain(|f| f.entry.path != path);
+        }
 
         let other = self.categories.entry(Category::Other).or_default();
         other.bytes += entry.bytes;
         other.files += 1;
         self.trash_bytes += entry.bytes;
         self.trash_files += 1;
+        Some(entry)
+    }
+
+    /// Contabiliza um item de `~/.cache` movido para a Lixeira. Os bytes já estavam em
+    /// `Other` (pasta oculta, regra 4) e continuam lá, agora como Lixeira; os arquivos de
+    /// dentro dele saem da lista dos maiores, porque mudaram de caminho.
+    pub fn record_trashed_cache(&mut self, path: &Path) -> Option<CacheEntry> {
+        let i = self
+            .suggestions
+            .caches
+            .iter()
+            .position(|c| c.path == path)?;
+        let entry = self.suggestions.caches.remove(i);
+        for stats in self.categories.values_mut() {
+            stats.top.retain(|f| !f.path.starts_with(path));
+        }
+        self.trash_bytes += entry.bytes;
+        self.trash_files += entry.files;
         Some(entry)
     }
 
@@ -200,6 +294,13 @@ fn lossy_path<S: Serializer>(path: &Path, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&path.to_string_lossy())
 }
 
+fn lossy_opt_path<S: Serializer>(path: &Option<PathBuf>, s: S) -> Result<S::Ok, S::Error> {
+    match path {
+        Some(p) => lossy_path(p, s),
+        None => s.serialize_none(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +326,7 @@ mod tests {
             unaccounted_bytes: unaccounted,
             denied_dirs: 0,
             files: 0,
+            suggestions: Suggestions::default(),
             elapsed_ms: 0,
             finished_at: 0,
         }
@@ -375,6 +477,97 @@ mod tests {
         assert_eq!(r.unaccounted_bytes, 500);
 
         assert!(r.record_trashed(Path::new("/home/u/a.jpg")).is_none());
+    }
+
+    /// `scanned()` com `/home/u/Downloads` e dois downloads antigos: `a.jpg` (também nos
+    /// maiores de Fotos) e `velho.iso`, que não entrou nos maiores de Outros.
+    fn with_old_downloads() -> ScanResult {
+        let mut r = scanned();
+        r.categories
+            .get_mut(&Category::Photos)
+            .unwrap()
+            .top
+            .push(entry("/home/u/Downloads/c.jpg", 0));
+        let old = |path: &str, bytes, category| SuggestedFile {
+            entry: entry(path, bytes),
+            category,
+        };
+        r.suggestions = Suggestions {
+            downloads_dir: Some("/home/u/Downloads".into()),
+            old_before: 10,
+            old_downloads: OldDownloads {
+                bytes: 80,
+                files: 2,
+                top: vec![
+                    old("/home/u/Downloads/c.jpg", 0, Category::Photos),
+                    old("/home/u/Downloads/velho.iso", 80, Category::Other),
+                ],
+            },
+            caches: vec![CacheEntry {
+                path: "/home/u/.cache/pip".into(),
+                bytes: 30,
+                files: 3,
+            }],
+        };
+        r
+    }
+
+    #[test]
+    fn old_download_outside_top_is_trashed_from_its_category() {
+        let mut r = with_old_downloads();
+        let iso = Path::new("/home/u/Downloads/velho.iso");
+        assert!(r.contains_file(iso));
+        let moved = r.record_trashed(iso).unwrap();
+        assert_eq!(moved.bytes, 80);
+
+        let old = &r.suggestions.old_downloads;
+        assert_eq!((old.bytes, old.files, old.top.len()), (0, 1, 1));
+        // Saiu de Outros como arquivo comum e voltou como Lixeira: o total de Outros fica igual.
+        let other = &r.categories[&Category::Other];
+        assert_eq!((other.bytes, other.files), (100, 2));
+        assert_eq!(r.trash_bytes, 120);
+        assert!(!r.contains_file(iso));
+    }
+
+    #[test]
+    fn trashing_from_category_also_updates_old_downloads() {
+        let mut r = with_old_downloads();
+        r.record_trashed(Path::new("/home/u/Downloads/c.jpg"))
+            .unwrap();
+        let old = &r.suggestions.old_downloads;
+        assert_eq!(old.files, 1);
+        assert_eq!(old.top.len(), 1);
+        assert_eq!(r.categories[&Category::Photos].top.len(), 2);
+    }
+
+    #[test]
+    fn trashed_cache_becomes_trash_inside_other() {
+        let mut r = with_old_downloads();
+        r.categories
+            .get_mut(&Category::Other)
+            .unwrap()
+            .top
+            .push(entry("/home/u/.cache/pip/wheel.whl", 20));
+        let before = r.categories[&Category::Other].bytes;
+
+        let moved = r
+            .record_trashed_cache(Path::new("/home/u/.cache/pip"))
+            .unwrap();
+        assert_eq!(moved.bytes, 30);
+        assert!(r.suggestions.caches.is_empty());
+        assert_eq!((r.trash_bytes, r.trash_files), (70, 4));
+        let other = &r.categories[&Category::Other];
+        assert_eq!(other.bytes, before);
+        assert!(
+            !other
+                .top
+                .iter()
+                .any(|f| f.path.starts_with("/home/u/.cache/pip"))
+        );
+        assert!(
+            r.record_trashed_cache(Path::new("/home/u/.cache/pip"))
+                .is_none()
+        );
     }
 
     #[test]

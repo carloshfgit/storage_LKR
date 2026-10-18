@@ -23,6 +23,31 @@ export interface FileEntry {
   modified: number;
 }
 
+/** Download antigo: guarda a categoria em que foi contado. */
+export interface SuggestedFile extends FileEntry {
+  category: Category;
+}
+
+/** Item direto de `~/.cache` (normalmente a pasta de cache de um app). */
+export interface CacheEntry {
+  path: string;
+  bytes: number;
+  files: number;
+}
+
+export interface Suggestions {
+  /** Pasta de Downloads do `user-dirs.dirs`; `null` se desligada. */
+  downloads_dir: string | null;
+  /** mtime abaixo do qual um download conta como antigo. */
+  old_before: number;
+  old_downloads: { bytes: number; files: number; top: SuggestedFile[] };
+  /** Os maiores itens de `~/.cache`, em ordem decrescente. */
+  caches: CacheEntry[];
+}
+
+/** Dias sem modificação para um download contar como antigo (`OLD_DOWNLOAD_DAYS`). */
+export const OLD_DOWNLOAD_DAYS = 90;
+
 export interface CategoryStats {
   bytes: number;
   files: number;
@@ -67,6 +92,7 @@ export interface ScanResult {
   unaccounted_bytes: number;
   denied_dirs: number;
   files: number;
+  suggestions: Suggestions;
   elapsed_ms: number;
   /** Fim do scan em segundos Unix. */
   finished_at: number;
@@ -109,7 +135,21 @@ export function categoryFiles(category: Category): Promise<FileItem[]> {
   return invoke("category_files", { category });
 }
 
-/** Abre o gerenciador de arquivos com o arquivo selecionado. Só vale para arquivos do último scan. */
+export function oldDownloads(): Promise<FileItem[]> {
+  return invoke("old_downloads");
+}
+
+/** Os `n` maiores arquivos que podem ir para a Lixeira (no máximo 50). */
+export function largestFiles(n: number): Promise<FileItem[]> {
+  return invoke("largest_files", { n });
+}
+
+/** Move itens inteiros de `~/.cache` para a Lixeira; validados no Rust como o `moveToTrash`. */
+export function trashCaches(paths: string[]): Promise<TrashReport> {
+  return invoke("trash_caches", { paths });
+}
+
+/** Abre o gerenciador de arquivos com o arquivo selecionado. Só vale para arquivos (e caches) do último scan. */
 export function reveal(path: string): Promise<void> {
   return invoke("reveal", { path });
 }

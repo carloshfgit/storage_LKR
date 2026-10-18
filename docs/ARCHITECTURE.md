@@ -97,13 +97,24 @@ pub struct ScanResult {
     rootless_scanned_bytes: u64,          // lido pelo walk em ~/.local/share/docker, já em AppsSystem
     unaccounted_bytes: u64,               // "Reservado / sem acesso" → somado em AppsSystem
     denied_dirs: u64,
+    suggestions: Suggestions,             // downloads antigos e caches (§4, Etapa 10)
     elapsed_ms: u64,
     finished_at: i64,                     // fim do scan (unix s): "há 2 h" do cache
 }
+
+pub struct Suggestions {
+    downloads_dir: Option<PathBuf>,       // XDG_DOWNLOAD_DIR do user-dirs.dirs; None = desligada
+    old_before: i64,                      // mtime de corte: início do scan − 90 dias
+    old_downloads: OldDownloads,          // { bytes, files, top: Vec<SuggestedFile> } (top-N = 200)
+    caches: Vec<CacheEntry>,              // { path, bytes, files }: os 20 maiores itens diretos de ~/.cache
+}
+pub struct SuggestedFile { #[serde(flatten)] entry: FileEntry, category: Category }
 ```
 
 Métodos usados pelas ações de limpeza (§7), todos mantendo a barra em 100%:
-- `record_trashed(path)`: tira o arquivo do top-N e da categoria e soma em `Other`, `trash_bytes` e `trash_files`.
+- `contains_file(path)`: o arquivo consta no top-N de uma categoria ou nos downloads antigos. É a regra 1 do `check_trashable`.
+- `record_trashed(path)`: tira o arquivo do top-N e da categoria e soma em `Other`, `trash_bytes` e `trash_files`. Um download antigo fora do top-N da categoria é achado em `old_downloads`, que guarda a categoria dele. Se o arquivo é um download antigo (pasta e mtime), também sai de `old_downloads`.
+- `record_trashed_cache(path)`: tira o item de `caches` e soma os bytes e arquivos dele em `trash_bytes`/`trash_files`. `Other` não muda, porque `~/.cache` já estava lá (regra 4). Os arquivos de dentro do item saem dos top-N, porque mudaram de caminho.
 - `clear_trash()`: tira de `Other` o que estava na Lixeira, inclusive os itens dela no top-N.
 - `set_disk(disk)`: troca o `DiskInfo` depois de uma limpeza, recalcula o restante e reaplica o limite do Docker.
 
@@ -123,6 +134,7 @@ Métodos usados pelas ações de limpeza (§7), todos mantendo a barra em 100%:
 | Agregação | Por categoria: `bytes`, `files` e `BinaryHeap<Reverse<(bytes, path)>>` limitado a **N = 200**. Só o top-N vai para a UI, nunca os mais de 600 mil arquivos |
 | Progresso | Um callback `Fn(ScanProgress)` com rate-limit de cerca de 100 ms (bytes por categoria e arquivos vistos) |
 | Cancelamento | `Arc<AtomicBool>`, checado no laço do walk |
+| Sugestões | `suggest.rs`, Etapa 10. Nas threads do walk, `Suggester` marca cada entrada com dois testes de prefixo: download antigo (arquivo sob a pasta de Downloads com mtime antes de `old_before`) e "dentro de `~/.cache`". Na thread que consome o walk, `SuggestionsAgg` soma os downloads antigos (bytes, arquivos e um heap top-N próprio, com a categoria) e os bytes e arquivos por item direto de `~/.cache`, chaveados pelo primeiro componente de `parent_path`, sem alocar por entrada. Sem I/O extra. A pasta de Downloads vem de `ScanOptions.downloads`, resolvida em `ScanOptions::new` por `download_dir(home, config_dir)`: `XDG_DOWNLOAD_DIR` do `user-dirs.dirs`, `~/Downloads` sem o arquivo e `None` se apontar para o próprio `$HOME` |
 | Conteúdo | Para arquivos regulares a que `classify_by_path` não sabe dar categoria (regra 6b), `sniff` lê o cabeçalho ali mesmo, nas threads do rayon. `ScanOptions.sniff = false` desliga (`scan --no-sniff`) |
 
 **Meta de desempenho** (SSD, 4 núcleos, cache quente): `/` com cerca de 1 milhão de entradas em **menos de 5 s**. O primeiro scan com cache frio pode levar mais.
@@ -240,10 +252,13 @@ pub struct DockerUsage { images: DockerItem, containers: DockerItem, volumes: Do
 | `category_files` | `(cat: Category) -> Vec<FileItem>` | Top-N do último resultado. `FileItem` é o `FileEntry` com `trashable`, calculado pela mesma validação do `move_to_trash` |
 | `move_to_trash` | `(paths: Vec<PathBuf>) -> TrashReport` | Validação abaixo. Usa `trash::delete` (padrão freedesktop, restaurável pelo Nautilus). `TrashReport` = movidos, bytes, recusados com o motivo e o `ScanResult` atualizado |
 | `empty_trash` | `(confirm: bool) -> Cleanup` | Exige `confirm == true`. `trash::os_limited::list` + `purge_all` (todas as lixeiras do usuário, como o Nautilus). `Cleanup` = bytes liberados (diferença do `statvfs`) e o `ScanResult` atualizado |
-| `reveal` | `(path: PathBuf) -> ()` | Só arquivos do último scan (`AppState::contains_file`), depois `tauri_plugin_opener::reveal_item_in_dir` (D-Bus `FileManager1.ShowItems` → Nautilus com o arquivo selecionado). `async`, porque a chamada D-Bus bloqueia |
+| `old_downloads` | `() -> Vec<FileItem>` | Os maiores downloads antigos do último resultado, com `trashable` |
+| `largest_files` | `(n: usize) -> Vec<FileItem>` | Junta os top-N de todas as categorias, ordena por tamanho e devolve os `n` primeiros (no máximo 50, `MAX_LARGEST`) que passam no `check_trashable` |
+| `trash_caches` | `(paths: Vec<PathBuf>) -> TrashReport` | Move itens inteiros de `~/.cache` para a Lixeira (`trash::delete`). Validação no `check_cache_trashable`, abaixo |
+| `reveal` | `(path: PathBuf) -> ()` | Só arquivos (e itens de cache) do último scan (`AppState::contains_file`), depois `tauri_plugin_opener::reveal_item_in_dir` (D-Bus `FileManager1.ShowItems` → Nautilus com o arquivo selecionado). `async`, porque a chamada D-Bus bloqueia |
 | `docker_prune` | `(mode: DockerMode, target: DockerTarget, confirm: bool) -> Cleanup` | `DockerTarget` = `BuildCache` \| `UnusedImages`. Recusa um `mode` sem daemon no último resultado. Roda o comando fixo no socket de `mode`, sem timeout (um prune grande leva minutos), relê só aquele daemon e devolve como o `empty_trash` |
 
-Status: todos ✅. `disk_info`, `start_scan`, `cancel_scan` e `category_files` na Etapa 3, `reveal` na 5 e as ações de limpeza na 6. Os commands que tocam no disco são `async`, para não travar a janela.
+Status: todos ✅. `disk_info`, `start_scan`, `cancel_scan` e `category_files` na Etapa 3, `reveal` na 5, as ações de limpeza na 6 e as sugestões (`old_downloads`, `largest_files`, `trash_caches`) na 10. Os commands que tocam no disco são `async`, para não travar a janela.
 
 ```rust
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -284,6 +299,7 @@ AppState { last: Mutex<Option<ScanResult>>, cancel: Arc<AtomicBool>, running: At
   5. ainda não está na Lixeira.
 
   Caminhos que falham são recusados com o motivo e listados no `TrashReport`; os outros seguem (DECISIONS D33).
+- `trash_caches` (`check_cache_trashable`), em ordem: o item consta em `suggestions.caches`; `fs::canonicalize` devolve o próprio caminho; o pai canônico é exatamente `<$HOME canônico>/.cache`. Nunca `~/.cache` inteira, nem algo mais fundo (DECISIONS D39).
 - Nunca há `remove_file` direto. O único apagamento permanente é `empty_trash`, que exige confirmação explícita.
 - `docker_prune` só executa comandos fixos, sem argumento vindo da UI: `docker --host <socket fixo> builder prune -f` e `docker --host <socket fixo> image prune -a -f`. A UI só escolhe o modo (um enum); o socket é montado no Rust. Os dados do rootless (`~/.local/share/docker`) e do Podman (`~/.local/share/containers`) são regra 1, então nunca vão para a Lixeira. **Volumes nunca são apagados pelo app**, porque guardam dados (bancos, uploads); eles só aparecem com o tamanho e a dica `docker volume ls`.
 - **Permissões:** o `build.rs` declara os commands no `AppManifest`. Com isso, o Tauri passa a exigir a permissão `allow-<command>` de cada um, em vez de liberar todos os commands registrados. `capabilities/default.json` lista só `core:default` e essas permissões. O `opener:default` do template foi removido e nenhuma permissão do opener é dada à janela: o `reveal` é um command próprio, que valida o caminho antes de chamar o plugin pelo Rust (DECISIONS D25, D31).
@@ -301,6 +317,8 @@ AppState { last: Mutex<Option<ScanResult>>, cancel: Arc<AtomicBool>, running: At
 | `CategoryDetail.svelte` | Aberto ao clicar num segmento da barra ou numa linha da legenda (só com um resultado completo). Mostra o total, a porcentagem e a contagem, e lista o top-N de `category_files`, ordenado por tamanho ou por data. Em Outros aparece o card "Lixeira"; em Apps/Sistema, um card por daemon, "Docker" e "Docker rootless" (imagens, containers, volumes e build cache, cada um com tamanho, quantidade e liberável; some sem aquele daemon) e "Reservado / sem acesso". Voltar: botão ou `Esc`. Checkbox nos arquivos com `trashable`, barra fixa no rodapé com o total selecionado e "Mover para a Lixeira". Card Lixeira com "Esvaziar Lixeira"; cada card Docker com "Limpar build cache" e "Remover imagens não usadas" do seu daemon, sem botão para volumes. As ações destrutivas passam pelo `ConfirmDialog`, com o tamanho no título. O resultado aparece num aviso: o que foi movido ou liberado, e os recusados com o motivo |
 | `ConfirmDialog.svelte` | `<dialog>` modal. Esc cancela |
 | `FileRow.svelte` | Nome, pasta abreviada (`~/…`, via `homeDir()`), tamanho, data relativa e o botão "Abrir na pasta". Desabilitado para nomes não UTF-8, que chegam com `�` (D26) |
+| `Suggestions.svelte` | Card "Sugestões" abaixo da barra, só com um resultado completo. Uma linha por sugestão com algo a mostrar: "Downloads antigos" (arquivos e bytes do resultado), "Caches" (pastas de `~/.cache`) e "Maiores arquivos" (`largest_files(10)`, recarregado a cada resultado novo). Clicar abre o detalhe |
+| `SuggestionDetail.svelte` | Mesma navegação do `CategoryDetail` (voltar, `Esc`, avisos, rodapé de seleção). Downloads antigos e maiores arquivos usam `FileRow` e `move_to_trash`. Caches listam pastas (nome, `~/.cache/…`, arquivos, tamanho, "abrir na pasta"), e "Mover para a Lixeira" pede confirmação no `ConfirmDialog` antes do `trash_caches` |
 | `api.ts` | `startScan(onEvent)` com `new Channel<ScanEvent>()` e wrappers tipados |
 | `categories.ts` | Nome (espelha `Category::label`) e token de cor de cada categoria, mais o tipo `Segment` usado pela barra e pela legenda |
 | `format.ts` | Unidades decimais (1 GB = 10⁹ B, como GNOME/iOS) com 3 algarismos significativos e casas fixas, porcentagem, contagem e segundos, tudo via `Intl.NumberFormat('pt-BR')` |
@@ -344,7 +362,6 @@ O último `ScanResult` é salvo em `$XDG_CACHE_HOME/storage-lkr/last.json` (norm
 ## 10. Fora do MVP
 
 - Detalhar Apps por Snap, Flatpak e APT (`snap list`, `flatpak list --columns=size`, `dpkg-query`).
-- Cards de sugestão ("Downloads > 90 dias", "Caches", "Maiores arquivos").
 - Atualização incremental com inotify ou fanotify.
 - Modo privilegiado via `pkexec` para zerar o "sem acesso".
 - Podman (`podman system df`). Hoje `~/.local/share/containers` só é marcado como app (regra 1), sem card próprio.

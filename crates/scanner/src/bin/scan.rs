@@ -5,7 +5,10 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use scanner::{Category, DEFAULT_DOCKER_TIMEOUT, DockerMode, ScanOptions, docker_status, scan};
+use scanner::{
+    Category, DEFAULT_DOCKER_TIMEOUT, DockerMode, OLD_DOWNLOAD_DAYS, ScanOptions, docker_status,
+    scan,
+};
 
 fn main() -> ExitCode {
     let mut root = PathBuf::from("/");
@@ -143,6 +146,21 @@ fn main() -> ExitCode {
             gb(d.reclaimable())
         );
     }
+    let sug = &result.suggestions;
+    if let Some(dir) = &sug.downloads_dir {
+        println!(
+            "downloads:      {} arquivos com mais de {OLD_DOWNLOAD_DAYS} dias em {} ({})",
+            sug.old_downloads.files,
+            dir.display(),
+            gb(sug.old_downloads.bytes)
+        );
+    }
+    let caches: u64 = sug.caches.iter().map(|c| c.bytes).sum();
+    println!(
+        "caches:         {} nos {} maiores itens de ~/.cache",
+        gb(caches),
+        sug.caches.len()
+    );
     let secs = walk_ms as f64 / 1000.0;
     println!(
         "tempo:          {secs:.2} s  ({} arquivos, {:.0} arq/s)",
@@ -151,6 +169,10 @@ fn main() -> ExitCode {
     );
 
     if show_top > 0 {
+        println!("\nCaches — maiores:");
+        for c in sug.caches.iter().take(show_top) {
+            println!("  {:>10}  {}", gb(c.bytes), c.path.display());
+        }
         for c in Category::ALL {
             println!("\n{} — maiores:", c.label());
             for f in result.categories[&c].top.iter().take(show_top) {

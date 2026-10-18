@@ -46,6 +46,7 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D36](#d36) | Nome "Storage Looker" e pacote só `.deb` | ✅ | 7 |
 | [D37](#d37) | Magic bytes só para arquivos sem extensão no `$HOME` | ✅ | 8 |
 | [D38](#d38) | Docker rootless: socket fixo por daemon, sem contar duas vezes | ✅ | 9 |
+| [D39](#d39) | Sugestões no walk; caches inteiros para a Lixeira | ✅ | 10 |
 
 ---
 
@@ -474,3 +475,27 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 **Limitações:**
 - Um `data-root` personalizado no `daemon.json` do rootless não é detectado: a pasta conta como dado comum, e o desconto pode contar duas vezes, limitado ao restante.
 - Um rootful com `DOCKER_HOST` ou socket em outro caminho não é encontrado.
+
+### D39 — Sugestões no walk; caches inteiros para a Lixeira <a id="d39"></a>
+**Decisão:**
+- "Downloads antigos" e "Caches" são somados no próprio walk. São dois testes de prefixo por entrada e o mtime que o stat já trouxe, sem nenhuma leitura extra.
+- **Downloads antigos:** arquivos sob a pasta de Downloads do `user-dirs.dirs` sem modificação há mais de 90 dias, contados a partir do início do scan.
+- **Caches:** agregados por item direto de `~/.cache` (normalmente um app). Os 20 maiores vão para o resultado e são movidos **inteiros** para a Lixeira, com confirmação.
+- **"Maiores arquivos":** sai dos top-N das categorias que já existem, filtrados pelo `check_trashable`. Não há heap novo.
+
+**Por quê:**
+- Um scan à parte só para as sugestões custaria outro walk do `$HOME` (cerca de 1,5 s). No walk, o custo fica no ruído: `/` levou 2,12–2,29 s, igual a antes.
+- A pasta de Downloads tem nome localizado (`~/Transferências` em algumas instalações), por isso vem do `user-dirs.dirs`, o mesmo arquivo do Nautilus. `$HOME` como valor desliga a pasta no padrão do `xdg-user-dirs`, e a sugestão some em vez de pegar a pasta pessoal inteira.
+- 90 dias pelo mtime: o atime não é confiável com `relatime`/`noatime`, e um download não modificado há 3 meses é um bom candidato. Mesmo assim, só **sugere**: nada é marcado sozinho.
+- `SuggestedFile` guarda a categoria porque um download antigo pode não estar no top-N da categoria dele. Sem isso, mandar o arquivo para a Lixeira não saberia de qual segmento tirar os bytes. Reclassificar pelo caminho erraria nos arquivos reconhecidos pelo conteúdo (D37).
+- Cache por item de `~/.cache`, e não por arquivo: os arquivos de cache são muitos e pequenos, e o que o usuário entende é "o cache do Chrome". Vai para a Lixeira e não é apagado, como tudo no app (D17). Restaurar é possível, e o espaço só volta ao esvaziar, o que a UI avisa.
+- A validação exige **filho direto** de `~/.cache`, com o caminho canônico igual ao do scan (D33). Nem a pasta inteira (que tem o cache do próprio app e de serviços em uso) nem algo mais fundo pode ser pedido pela UI.
+
+**Descartado:**
+- Apagar caches permanentemente (como o "Limpar cache" de alguns apps): contraria D17, e um cache em uso pode ser necessário para fechar o app direito.
+- Contar `~/.cache/thumbnails` à parte: já é um item direto de `~/.cache` e aparece na lista como qualquer outro.
+- Um heap global para "maiores arquivos": os 200 maiores de cada categoria já cobrem os 50 maiores do disco.
+
+**Limitações:**
+- Um AppImage dentro de `~/.cache` é contado em Apps/Sistema (regra 3). Ao mover o item inteiro, os bytes dele entram em `trash_bytes`, mas não saem de Apps/Sistema até o próximo scan.
+- O cache em `$XDG_CACHE_HOME`, fora de `~/.cache`, não é considerado.

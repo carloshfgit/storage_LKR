@@ -279,32 +279,49 @@ No modo rootless, os dados ficam em `~/.local/share/docker`, dentro do `$HOME`. 
 
 ## Etapa 10 — Cards de sugestão (backlog 2)
 A tela principal ganha, abaixo da legenda, cards com o que dá para limpar com segurança: "Downloads antigos", "Caches" e "10 maiores arquivos".
-- [ ] **Pasta de Downloads localizada:** ler `XDG_DOWNLOAD_DIR` de `~/.config/user-dirs.dirs` (`~/Downloads`, `~/Transferências`…), com fallback para `~/Downloads`. Fica no `Classifier`/`ScanOptions`, sem I/O no walk.
-- [ ] `walk.rs` agrega, sem mudar as categorias:
+- [x] **Pasta de Downloads localizada:** ler `XDG_DOWNLOAD_DIR` de `~/.config/user-dirs.dirs` (`~/Downloads`, `~/Transferências`…), com fallback para `~/Downloads`. Fica no `ScanOptions` (`downloads`), resolvida uma vez em `ScanOptions::new`, sem I/O no walk. `$HOME` como valor desliga a sugestão.
+- [x] `walk.rs` agrega, sem mudar as categorias:
   - **Downloads antigos:** arquivos sob a pasta de Downloads com mtime há mais de 90 dias (`OLD_DOWNLOAD_DAYS`, relativo ao início do scan). Bytes, contagem e top-N próprio (heap como o das categorias).
-  - **Caches:** bytes por subpasta de primeiro nível de `~/.cache` (`~/.cache/mozilla`, `~/.cache/pip`…), mais `~/.cache/thumbnails`. Só as 20 maiores vão para o resultado.
-- [ ] `model.rs`: `ScanResult.suggestions: Suggestions { old_downloads: CategoryStats, caches: Vec<DirEntry { path, bytes }> }`. Incrementar `cache::VERSION`.
-- [ ] `record_trashed`/`find_file` passam a olhar também `old_downloads.top`, para o arquivo sair dos dois lugares e a barra continuar certa. `clear_trash` não precisa mudar.
-- [ ] **Ações:**
+  - **Caches:** bytes e arquivos por item direto de `~/.cache` (`~/.cache/mozilla`, `~/.cache/pip`, `~/.cache/thumbnails`…). Só os 20 maiores vão para o resultado.
+- [x] `model.rs`: `ScanResult.suggestions: Suggestions { downloads_dir, old_before, old_downloads: OldDownloads, caches: Vec<CacheEntry { path, bytes, files }> }`. Cada download antigo é um `SuggestedFile`, que guarda a categoria (D39). `cache::VERSION` foi para 4.
+- [x] `record_trashed` e o novo `ScanResult::contains_file` passam a olhar também `old_downloads.top`, para o arquivo sair dos dois lugares e a barra continuar certa. `clear_trash` não precisa mudar.
+- [x] **Ações:**
   - Downloads antigos: mesma `move_to_trash`. `contains_file`/`check_trashable` aceitam os arquivos de `old_downloads.top`, com a mesma validação (D33).
-  - Caches: novo command `trash_cache_dir(path)`. Só aceita um `path` que esteja em `suggestions.caches`, com canônico igual e **filho direto** de `~/.cache`. Move a pasta inteira para a Lixeira (D17: nada de `rm`). Atualiza o resultado: tira os bytes de Outros e soma em `trash_bytes`.
-  - 10 maiores: novo command `largest_files(n)`, com `n ≤ 50`, que une os top-N de todas as categorias e devolve `FileItem` com `trashable`, reaproveitando `category_files`.
+  - Caches: novo command `trash_caches(paths)`, no plural como o `move_to_trash`, que devolve `TrashReport`. Só aceita um `path` que esteja em `suggestions.caches`, com canônico igual e **filho direto** de `~/.cache`. Move a pasta inteira para a Lixeira (D17: nada de `rm`). No resultado, os bytes ficam em Outros (já estavam lá) e entram em `trash_bytes`.
+  - 10 maiores: novo command `largest_files(n)`, com `n ≤ 50`, que une os top-N de todas as categorias e devolve só os que passam no `check_trashable`. Mais o command `old_downloads`, para a lista com `trashable`.
   - Seguir os 4 passos de "Adicionar um command" do CLAUDE.md para cada command novo, mais os wrappers em `api.ts`.
-- [ ] **UI:**
-  - `SuggestionCard.svelte`: título, tamanho total e um resumo ("37 arquivos com mais de 90 dias").
-  - Clicar abre uma lista no estilo do `CategoryDetail`, reaproveitando `FileRow`, a seleção múltipla e o rodapé "Mover para a Lixeira". Para os caches, cada linha é uma pasta com o botão "Mover para a Lixeira", que pede confirmação no `ConfirmDialog`.
+- [x] **UI:**
+  - `Suggestions.svelte`: um card "Sugestões" com uma linha por sugestão (título, resumo e tamanho total, por exemplo "19 arquivos sem uso há mais de 90 dias").
+  - Clicar abre o `SuggestionDetail.svelte`, no estilo do `CategoryDetail`, reaproveitando `FileRow`, a seleção múltipla e o rodapé "Mover para a Lixeira". Para os caches, cada linha é uma pasta com checkbox, e "Mover para a Lixeira" pede confirmação no `ConfirmDialog`.
   - Card sem nada a sugerir não aparece.
-- [ ] Testes:
-  - walk numa pasta temporária com mtimes ajustados (`filetime` só em dev-deps, ou `utimensat` via `rustix`): Downloads antigos conta só os velhos;
+- [x] Testes:
+  - walk numa pasta temporária com mtimes ajustados (`File::set_modified`, da std): Downloads antigos conta só os velhos;
   - caches agregados por subpasta;
-  - `trash_cache_dir` recusa `~/.cache` em si, um neto, um caminho fora da lista e um link simbólico trocado depois do scan;
+  - `trash_caches` recusa `~/.cache` em si, um neto, um caminho fora da lista e um link simbólico trocado depois do scan;
   - `record_trashed` de um arquivo antigo de Downloads atualiza categoria e sugestão.
-- [ ] Docs: ARCHITECTURE §3, §4, §7 e §8; DECISIONS D39 (90 dias, caches por subpasta movidos para a Lixeira em vez de apagados, "10 maiores" calculado dos top-N já existentes).
+- [x] Docs: ARCHITECTURE §3, §4, §7 e §8; DECISIONS D39 (90 dias, caches por subpasta movidos para a Lixeira em vez de apagados, "10 maiores" calculado dos top-N já existentes).
 
 **Pronto quando:**
 - Os três cards aparecem com valores que conferem com `find ~/Downloads -mtime +90 -type f` e `du -sB1 ~/.cache/*`.
 - Mover um cache para a Lixeira faz ele aparecer no Nautilus (restaurável) e o card "Lixeira" crescer no mesmo valor.
 - Walk de `/` continua < 5 s.
+
+**Resultado (17/10/2026):**
+- Nesta máquina (CLI, `scan ~ --top 5`):
+  - 19 downloads com mais de 90 dias somando 1,50 GB, igual ao `find ~/Downloads -type f -mtime +90` (19 arquivos, 1,496 GB alocados);
+  - caches: `google-chrome` com 4,33 GB, `pip` com 0,95 GB e `ms-playwright` com 0,71 GB, idênticos ao `du -sB1 ~/.cache/*`.
+- Walk de `/` (release, cache quente): 2,12 / 2,19 / 2,29 s, sem mudança.
+- Testes novos:
+  - `user-dirs.dirs` (localizado, absoluto, desligado e ausente);
+  - `Suggester` casando componentes inteiros, e caches ordenados e truncados;
+  - walk com mtimes ajustados;
+  - contabilidade de download antigo fora do top-N, atualização da sugestão ao mandar pela categoria e cache movido;
+  - ponte: downloads antigos listados e movidos, `largest_files` só com os que podem ir para a Lixeira e com limite, e `trash_caches` recusando a pasta inteira, um neto, um item fundo enfiado na lista, um link simbólico trocado e um caminho inventado.
+- Workspace: 73 testes passam, clippy limpo, `npm run check` sem erros e `npm run build` ok.
+- ⏳ **Falta a conferência visual**, que precisa ser feita por você:
+  1. Ver o card "Sugestões" abaixo da barra.
+  2. Abrir "Caches", mover uma pasta para a Lixeira e restaurá-la pelo Nautilus.
+  3. Conferir que o card "Lixeira" cresceu no mesmo valor.
 
 ---
 
@@ -352,7 +369,7 @@ Hoje o app só escaneia `/` e não cruza filesystems (D07). Com `/home` numa par
 
 ## Backlog (pós-MVP)
 1. Detalhar Apps por Snap, Flatpak e APT, com tamanho por app.
-2. Cards de sugestão: "Downloads antigos", "Caches", "10 maiores arquivos". → **Etapa 10**
+2. Cards de sugestão: "Downloads antigos", "Caches", "10 maiores arquivos". → **Etapa 10** ✅
 3. Atualização incremental (inotify ou fanotify).
 4. Modo privilegiado via `pkexec` para escanear o que hoje é "sem acesso".
 5. Detecção por magic bytes para arquivos sem extensão. → **Etapa 8** ✅

@@ -20,6 +20,9 @@ pub fn run() {
             commands::move_to_trash,
             commands::empty_trash,
             commands::docker_prune,
+            commands::old_downloads,
+            commands::largest_files,
+            commands::trash_caches,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

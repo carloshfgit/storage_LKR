@@ -15,6 +15,10 @@ use serde::Serialize;
 
 use super::AppState;
 
+/// Limite do `largest_files`: a lista sai dos maiores de cada categoria, e cada item
+/// custa um `canonicalize`.
+pub const MAX_LARGEST: usize = 50;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ActionError {
     #[error("nenhuma varredura concluída ainda")]
@@ -77,6 +81,79 @@ impl AppState {
                 entry: entry.clone(),
             })
             .collect())
+    }
+
+    /// Downloads antigos do último scan (os maiores primeiro), com o veredito da Lixeira.
+    pub fn old_downloads(&self) -> Result<Vec<FileItem>, ActionError> {
+        let last = self.lock_last();
+        let result = last.as_ref().ok_or(ActionError::NoScan)?;
+        Ok(result
+            .suggestions
+            .old_downloads
+            .top
+            .iter()
+            .map(|f| FileItem {
+                trashable: check_trashable(result, &f.entry.path).is_ok(),
+                entry: f.entry.clone(),
+            })
+            .collect())
+    }
+
+    /// Os `n` maiores arquivos do último scan que podem ir para a Lixeira, de todas as
+    /// categorias (no máximo [`MAX_LARGEST`]). Sai das listas dos maiores que já existem.
+    pub fn largest_files(&self, n: usize) -> Result<Vec<FileItem>, ActionError> {
+        let last = self.lock_last();
+        let result = last.as_ref().ok_or(ActionError::NoScan)?;
+        let mut all: Vec<&FileEntry> = result.categories.values().flat_map(|c| &c.top).collect();
+        all.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.path.cmp(&b.path)));
+        Ok(all
+            .into_iter()
+            .filter(|e| check_trashable(result, &e.path).is_ok())
+            .take(n.min(MAX_LARGEST))
+            .map(|e| FileItem {
+                entry: e.clone(),
+                trashable: true,
+            })
+            .collect())
+    }
+
+    /// Manda itens inteiros de `~/.cache` para a Lixeira. Cada um precisa estar na lista de
+    /// caches do último scan e ser filho direto de `~/.cache`; os recusados voltam com o motivo.
+    pub fn trash_caches(
+        &self,
+        paths: &[PathBuf],
+        trash: impl Fn(&Path) -> Result<(), String>,
+    ) -> Result<TrashReport, ActionError> {
+        self.ensure_idle()?;
+        let mut last = self.lock_last();
+        let result = last.as_mut().ok_or(ActionError::NoScan)?;
+
+        let mut moved = 0;
+        let mut moved_bytes = 0;
+        let mut rejected = Vec::new();
+        for path in paths {
+            match check_cache_trashable(result, path).and_then(|()| trash(path)) {
+                Ok(()) => {
+                    if let Some(entry) = result.record_trashed_cache(path) {
+                        moved += 1;
+                        moved_bytes += entry.bytes;
+                    }
+                }
+                Err(reason) => rejected.push(Rejected {
+                    path: path.to_string_lossy().into_owned(),
+                    reason,
+                }),
+            }
+        }
+        if moved > 0 {
+            self.persist(result);
+        }
+        Ok(TrashReport {
+            moved,
+            moved_bytes,
+            rejected,
+            result: result.clone(),
+        })
     }
 
     /// Valida cada caminho e manda os aprovados para a Lixeira com `trash`. Os recusados
@@ -202,7 +279,7 @@ impl AppState {
 /// não mudou desde então (sem links simbólicos no meio), fica sob o `$HOME`, não pertence
 /// a sistema nem a app gerenciado e ainda não está na Lixeira.
 fn check_trashable(result: &ScanResult, path: &Path) -> Result<(), String> {
-    if result.find_file(path).is_none() {
+    if !result.contains_file(path) {
         return Err("não está na última varredura".into());
     }
     let canonical = fs::canonicalize(path).map_err(|_| "o arquivo não existe mais".to_string())?;
@@ -219,6 +296,23 @@ fn check_trashable(result: &ScanResult, path: &Path) -> Result<(), String> {
     }
     if classifier.in_trash(&canonical) {
         return Err("já está na Lixeira".into());
+    }
+    Ok(())
+}
+
+/// Regras do `trash_caches`: o item consta na lista de caches do último scan, o caminho não
+/// mudou desde então e é filho direto de `~/.cache` (nunca a pasta inteira, nem algo mais fundo).
+fn check_cache_trashable(result: &ScanResult, path: &Path) -> Result<(), String> {
+    if !result.suggestions.caches.iter().any(|c| c.path == path) {
+        return Err("não está na última varredura".into());
+    }
+    let canonical = fs::canonicalize(path).map_err(|_| "não existe mais".to_string())?;
+    if canonical != path {
+        return Err("o caminho mudou desde a varredura".into());
+    }
+    let home = fs::canonicalize(&result.home).unwrap_or_else(|_| result.home.clone());
+    if home.as_os_str().is_empty() || canonical.parent() != Some(&home.join(".cache")) {
+        return Err("não é um item de ~/.cache".into());
     }
     Ok(())
 }
@@ -457,6 +551,161 @@ mod tests {
         assert_eq!(cleanup.result.disk.available_bytes, 40_100);
         let lixeira = f.home.join(".local/share/Trash/files/velho.mp4");
         assert!(cleanup.result.find_file(&lixeira).is_none());
+    }
+
+    /// Reescaneia a fixture com `~/Downloads` ligado, depois de criar mais arquivos.
+    fn rescan(f: &Fixture) {
+        let mut opts = ScanOptions::new(&f.dir);
+        opts.home = f.home.clone();
+        opts.downloads = Some(f.home.join("Downloads"));
+        *f.state.lock_last() = Some(scan(&opts, |_| {}).unwrap());
+    }
+
+    fn write_aged(path: &Path, len: usize, days: u64) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, vec![0u8; len]).unwrap();
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+
+    #[test]
+    fn old_downloads_are_listed_and_trashable() {
+        let f = fixture("old-downloads");
+        let velho = f.home.join("Downloads/velho.zip");
+        write_aged(&velho, 30_000, 200);
+        write_aged(&f.home.join("Downloads/novo.zip"), 30_000, 1);
+        rescan(&f);
+
+        let list = f.state.old_downloads().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].entry.path, velho);
+        assert!(list[0].trashable);
+        assert!(f.state.contains_file(&velho));
+
+        let report = f
+            .state
+            .move_to_trash(std::slice::from_ref(&velho), |_| Ok(()))
+            .unwrap();
+        assert_eq!(report.moved, 1);
+        let old = &report.result.suggestions.old_downloads;
+        assert_eq!((old.files, old.bytes), (0, 0));
+        assert!(f.state.old_downloads().unwrap().is_empty());
+    }
+
+    #[test]
+    fn largest_files_are_trashable_and_capped() {
+        let f = fixture("largest");
+        fs::write(f.dir.join("enorme-fora.iso"), vec![0u8; 500_000]).unwrap();
+        fs::write(f.home.join("grande.zip"), vec![0u8; 90_000]).unwrap();
+        rescan(&f);
+
+        let top = f.state.largest_files(2).unwrap();
+        assert_eq!(top.len(), 2);
+        // O maior de todos está fora do $HOME: não entra.
+        assert_eq!(top[0].entry.path, f.home.join("grande.zip"));
+        assert!(top.iter().all(|i| i.trashable));
+        assert!(top[0].entry.bytes >= top[1].entry.bytes);
+
+        let all = f.state.largest_files(1_000).unwrap();
+        assert!(all.len() <= MAX_LARGEST);
+        for p in [
+            f.dir.join("fora.jpg"),
+            f.home.join("snap/app/musica.mp3"),
+            f.home.join(".local/share/Trash/files/velho.mp4"),
+        ] {
+            assert!(!all.iter().any(|i| i.entry.path == p), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn trash_caches_validates_each_item() {
+        let f = fixture("caches");
+        let cache = f.home.join(".cache");
+        for d in ["app", "trocado", "app/sub"] {
+            fs::create_dir_all(cache.join(d)).unwrap();
+        }
+        fs::write(cache.join("app/blob"), vec![0u8; 50_000]).unwrap();
+        fs::write(cache.join("trocado/x"), vec![0u8; 10_000]).unwrap();
+        rescan(&f);
+        // Um item mais fundo enfiado na lista não pode passar pela checagem de filho direto.
+        f.state
+            .lock_last()
+            .as_mut()
+            .unwrap()
+            .suggestions
+            .caches
+            .push(scanner::CacheEntry {
+                path: cache.join("app/sub"),
+                bytes: 1,
+                files: 0,
+            });
+        // Depois do scan, a pasta virou um link simbólico.
+        fs::remove_dir_all(cache.join("trocado")).unwrap();
+        std::os::unix::fs::symlink(f.dir.join("alvo"), cache.join("trocado")).unwrap();
+        fs::create_dir_all(f.dir.join("alvo")).unwrap();
+
+        let before = f.state.last_result().unwrap().trash_bytes;
+        let trashed = RefCell::new(Vec::new());
+        let app = cache.join("app");
+        let report = f
+            .state
+            .trash_caches(
+                &[
+                    app.clone(),
+                    cache.clone(),
+                    cache.join("app/blob"),
+                    cache.join("app/sub"),
+                    cache.join("trocado"),
+                    cache.join("inventado"),
+                ],
+                |p| {
+                    trashed.borrow_mut().push(p.to_path_buf());
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(*trashed.borrow(), std::slice::from_ref(&app));
+        assert_eq!(report.moved, 1);
+        assert!(report.moved_bytes >= 50_000);
+        assert_eq!(reason(&report, &cache), "não está na última varredura");
+        assert_eq!(
+            reason(&report, &cache.join("app/blob")),
+            "não está na última varredura"
+        );
+        assert_eq!(
+            reason(&report, &cache.join("app/sub")),
+            "não é um item de ~/.cache"
+        );
+        assert_eq!(
+            reason(&report, &cache.join("trocado")),
+            "o caminho mudou desde a varredura"
+        );
+        assert_eq!(
+            reason(&report, &cache.join("inventado")),
+            "não está na última varredura"
+        );
+        assert_eq!(report.result.trash_bytes, before + report.moved_bytes);
+        assert!(
+            !report
+                .result
+                .suggestions
+                .caches
+                .iter()
+                .any(|c| c.path == app)
+        );
+
+        // E não pode ser movido de novo.
+        let again = f
+            .state
+            .trash_caches(std::slice::from_ref(&app), |_| Ok(()))
+            .unwrap();
+        assert_eq!(again.moved, 0);
     }
 
     fn usage(images: u64) -> DockerUsage {

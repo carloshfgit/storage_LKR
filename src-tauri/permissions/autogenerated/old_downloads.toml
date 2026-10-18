@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-old-downloads"
+description = "Enables the old_downloads command without any pre-configured scope."
+commands.allow = ["old_downloads"]
+
+[[permission]]
+identifier = "deny-old-downloads"
+description = "Denies the old_downloads command without any pre-configured scope."
+commands.deny = ["old_downloads"]

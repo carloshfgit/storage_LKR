@@ -59,8 +59,31 @@ pub fn category_files(
     state.category_files(category).map_err(|e| e.to_string())
 }
 
-/// Abre o gerenciador de arquivos com `path` selecionado. Só aceita arquivos do último
-/// scan. `async` porque a chamada D-Bus ao Nautilus bloqueia, e commands síncronos
+/// Downloads antigos do último scan, cada um dizendo se pode ir para a Lixeira.
+#[tauri::command(async)]
+pub fn old_downloads(state: State<'_, Arc<AppState>>) -> Result<Vec<FileItem>, String> {
+    state.old_downloads().map_err(|e| e.to_string())
+}
+
+/// Os `n` maiores arquivos que podem ir para a Lixeira (no máximo 50).
+#[tauri::command(async)]
+pub fn largest_files(state: State<'_, Arc<AppState>>, n: usize) -> Result<Vec<FileItem>, String> {
+    state.largest_files(n).map_err(|e| e.to_string())
+}
+
+/// Move itens inteiros de `~/.cache` para a Lixeira (os apps recriam o cache).
+#[tauri::command(async)]
+pub fn trash_caches(
+    state: State<'_, Arc<AppState>>,
+    paths: Vec<PathBuf>,
+) -> Result<TrashReport, String> {
+    state
+        .trash_caches(&paths, |p| trash::delete(p).map_err(|e| e.to_string()))
+        .map_err(|e| e.to_string())
+}
+
+/// Abre o gerenciador de arquivos com `path` selecionado. Só aceita arquivos (e caches) do
+/// último scan. `async` porque a chamada D-Bus ao Nautilus bloqueia, e commands síncronos
 /// rodam na thread principal.
 #[tauri::command(async)]
 pub fn reveal(state: State<'_, Arc<AppState>>, path: PathBuf) -> Result<(), String> {

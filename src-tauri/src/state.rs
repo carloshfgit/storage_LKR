@@ -130,14 +130,12 @@ impl AppState {
         self.lock_last().clone()
     }
 
-    /// Se `path` é um dos arquivos listados no último scan. Toda ação sobre um arquivo
-    /// vindo da UI passa por aqui: caminhos inventados ou não UTF-8 (que voltam com `�`,
-    /// DECISIONS D26) são recusados.
+    /// Se `path` é um dos arquivos (ou caches) listados no último scan. Toda ação sobre um
+    /// caminho vindo da UI passa por aqui: caminhos inventados ou não UTF-8 (que voltam com
+    /// `�`, DECISIONS D26) são recusados.
     pub fn contains_file(&self, path: &Path) -> bool {
         self.lock_last().as_ref().is_some_and(|r| {
-            r.categories
-                .values()
-                .any(|c| c.top.iter().any(|f| f.path == path))
+            r.contains_file(path) || r.suggestions.caches.iter().any(|c| c.path == path)
         })
     }
 

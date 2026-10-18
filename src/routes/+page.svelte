@@ -18,6 +18,8 @@
   import CategoryDetail from "$lib/CategoryDetail.svelte";
   import Legend from "$lib/Legend.svelte";
   import StorageBar from "$lib/StorageBar.svelte";
+  import SuggestionDetail from "$lib/SuggestionDetail.svelte";
+  import Suggestions, { type SuggestionKind } from "$lib/Suggestions.svelte";
 
   type Phase = "idle" | "scanning" | "done" | "cancelled" | "error";
 
@@ -34,6 +36,8 @@
   let scanId = 0;
   /** Categoria aberta no detalhe. */
   let selected = $state<Category | null>(null);
+  /** Sugestão aberta no detalhe (só uma das duas telas fica aberta). */
+  let suggestion = $state<SuggestionKind | null>(null);
   /** Scan em segundo plano (ao abrir com o cache): a tela fica no resultado anterior até o `done`. */
   let background = $state(false);
   /** Incrementa a cada `done`; o detalhe aberto recarrega a lista. */
@@ -45,7 +49,19 @@
 
   function open(key: Category) {
     selected = key;
+    suggestion = null;
     window.scrollTo(0, 0);
+  }
+
+  function openSuggestion(kind: SuggestionKind) {
+    suggestion = kind;
+    selected = null;
+    window.scrollTo(0, 0);
+  }
+
+  function update(r: ScanResult) {
+    result = r;
+    disk = r.disk;
   }
 
   const segments = $derived.by((): Segment[] =>
@@ -66,6 +82,7 @@
   );
 
   const detail = $derived(selected && !showLive ? segments.find((s) => s.key === selected) : undefined);
+  const suggestionView = $derived(suggestion && !showLive ? suggestion : null);
 
   const free = $derived(disk?.available_bytes ?? 0);
   const used = $derived(disk ? disk.total_bytes - disk.available_bytes : 0);
@@ -175,16 +192,23 @@
         {total}
         version={scanVersion}
         onback={() => (selected = null)}
-        onupdate={(r) => {
-          result = r;
-          disk = r.disk;
-        }}
+        onupdate={update}
+      />
+    </div>
+  {:else if suggestionView && result}
+    <div class="screen detail">
+      <SuggestionDetail
+        kind={suggestionView}
+        {result}
+        version={scanVersion}
+        onback={() => (suggestion = null)}
+        onupdate={update}
       />
     </div>
   {/if}
 
   <!-- Escondida, não desmontada: a barra volta do detalhe sem refazer a animação. -->
-  <div class="screen home" hidden={!!detail}>
+  <div class="screen home" hidden={!!detail || !!suggestionView}>
     <header>
       <h1>Armazenamento</h1>
       {#if disk}
@@ -231,6 +255,10 @@
 
       <Legend {segments} {free} {total} {onselect} />
     </section>
+
+    {#if result && !showLive}
+      <Suggestions {result} onselect={openSuggestion} />
+    {/if}
   </div>
 </main>
 
