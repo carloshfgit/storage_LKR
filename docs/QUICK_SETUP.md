@@ -2,6 +2,27 @@
 
 Guia para Ubuntu 24.04. Os outros documentos: [PLAN](PLAN.md) (etapas), [ARCHITECTURE](ARCHITECTURE.md) (como funciona) e [DECISIONS](DECISIONS.md) (por quê).
 
+---
+
+## Instalação rápida (apenas usar o aplicativo)
+
+Se você só quer usar o **Storage Looker** e não pretende compilar ou modificar o código-fonte, instale o pacote pronto com poucos cliques:
+
+1. Acesse a página de **[Releases no GitHub](https://github.com/carloshfgit/storage_LKR/releases/latest)**.
+2. Na seção **Assets**, clique no arquivo `.deb` para baixar (ex.: `storage-looker_1.0.0_amd64.deb`).
+3. **Instale com poucos cliques:**
+   - Dê **dois cliques** no arquivo `.deb` baixado e clique em **Instalar** pela Central de Aplicativos do Ubuntu; ou
+   - Pelo terminal, se preferir:
+     ```bash
+     sudo apt install ./storage-looker_*.deb
+     ```
+
+Pronto! O aplicativo estará disponível no menu de aplicativos do sistema como **Storage Looker**.
+
+---
+
+> **Nota:** Se você deseja configurar o ambiente de desenvolvimento, compilar o código do zero ou rodar a CLI de benchmark, continue com os passos abaixo.
+
 ## 1. Pré-requisitos (uma vez só)
 
 ```bash
