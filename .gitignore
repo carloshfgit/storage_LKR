@@ -58,3 +58,5 @@ ehthumbs.db
 *.sqlite3
 *.db
 
+# Docs / Drafts
+docs/divulgar.md

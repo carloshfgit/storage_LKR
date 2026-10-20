@@ -4,6 +4,28 @@
 
 Gerenciador de armazenamento para Ubuntu no estilo iOS. Com uma barra horizontal única dividida por cor, com categorias por tipo de arquivo e ações para liberar espaço com segurança.
 
+<p align="center">
+  <img src="prints-storage-looker/tela-inicial.png" alt="Tela inicial do Storage Looker: barra de armazenamento colorida, lista de categorias, card da Lixeira e sugestões de limpeza" width="720">
+</p>
+
+**Seu disco inteiro, em uma olhada.** Mais de um milhão de arquivos analisados em pouco mais de 2 segundos, sem pedir senha de administrador. A barra mostra para onde foi cada gigabyte (Fotos, Vídeos, Áudio, Documentos, Apps/Sistema, Outros e espaço livre) e logo abaixo aparecem as sugestões que mais liberam espaço: downloads esquecidos, caches dos apps e os maiores arquivos da sua pasta pessoal.
+
+## Por dentro
+
+<p align="center">
+  <img src="prints-storage-looker/apps-sistema.png" alt="Tela Apps/Sistema: detalhamento do Docker por imagens, containers, volumes e build cache, espaço reservado e maiores arquivos do sistema" width="720">
+</p>
+
+**Nada fica escondido em "Sistema".** Clique em uma categoria para ver o que ocupa espaço de verdade. Em Apps/Sistema, o Docker aparece separado em imagens, containers, volumes e build cache, com quanto dá para liberar em cada um. O espaço que nenhum programa comum consegue ler é mostrado como "reservado / sem acesso", com a explicação do porquê, em vez de sumir da conta.
+
+<p align="center">
+  <img src="prints-storage-looker/lixeira-inteligente.png" alt="Tela da Lixeira: itens apagados ordenados por tamanho, com data de exclusão, aviso de itens travados e botão Esvaziar Lixeira" width="720">
+</p>
+
+**Uma Lixeira que finalmente faz sentido.** Arquivos apagados continuam ocupando disco até a Lixeira ser esvaziada, e o Storage Looker deixa isso claro. Ordene por tamanho ou data, restaure o que foi por engano, apague só o que escolher ou esvazie tudo de uma vez. Itens que o app não consegue remover são marcados como *travados*, com os comandos de terminal que resolvem.
+
+## Recursos
+
 - **Rápido:** escaneia `/` (~1 milhão de arquivos) em cerca de 2 s, com cache quente, sem root.
 - **Preciso:** mede o espaço alocado em disco, como `df` e `du`. A barra sempre soma 100% do disco.
 - **Classificação inteligente:** o caminho decide antes da extensão. Um ícone em `/usr` é Sistema, um JPG do cache do navegador é Outros e um AppImage é App. Uma foto sem extensão é reconhecida pelo conteúdo.
