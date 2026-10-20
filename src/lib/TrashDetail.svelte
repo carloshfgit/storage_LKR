@@ -42,6 +42,8 @@
   let notice = $state<Notice | null>(null);
   let confirm = $state<(ConfirmRequest & { run: () => void }) | null>(null);
   let sortBy = $state<"size" | "date">("size");
+  /** O card dos travados abre sozinho quando um apagar deixa itens para trás. */
+  let blockedOpen = $state(false);
 
   $effect(() => {
     reload;
@@ -74,6 +76,15 @@
   function folder(path: string) {
     const dir = path.slice(0, path.lastIndexOf("/")) || "/";
     return home && (dir === home || dir.startsWith(home + "/")) ? "~" + dir.slice(home.length) : dir;
+  }
+
+  /** O que a lista mostra e pode ser marcado; "Selecionar tudo" marca exatamente isso. */
+  const selectable = $derived((items ?? []).map((i) => i.id));
+  const allSelected = $derived(selectable.length > 0 && selectable.every((key) => selection.has(key)));
+
+  function toggleAll() {
+    if (allSelected) selection.clear();
+    else for (const key of selectable) selection.add(key);
   }
 
   function toggle(id: string) {
@@ -122,7 +133,8 @@
     try {
       const report = await purgeFromTrash(ids);
       onupdate(report.result);
-      notice = purgeNotice(report, false);
+      notice = purgeNotice(report, false, true);
+      blockedOpen ||= report.rejected.some((r) => r.commands?.length);
       reload++;
     } catch (err) {
       notice = { kind: "error", text: `Não foi possível apagar: ${err}` };
@@ -137,7 +149,8 @@
     try {
       const report = await emptyTrash();
       onupdate(report.result);
-      notice = purgeNotice(report, true);
+      notice = purgeNotice(report, true, true);
+      blockedOpen ||= report.rejected.some((r) => r.commands?.length);
       reload++;
     } catch (err) {
       notice = { kind: "error", text: `A limpeza falhou: ${err}` };
@@ -214,7 +227,7 @@
 
 {#if blocked.length > 0}
   <!-- Recolhido: os comandos só interessam a quem quiser resolver agora. -->
-  <details class="card blocked">
+  <details class="card blocked" bind:open={blockedOpen}>
     <summary>
       <span class="title">
         {plural(blocked.length, "item o app não consegue apagar", "itens o app não consegue apagar")}
@@ -249,9 +262,14 @@
     <p class="muted">A Lixeira está vazia.</p>
   {:else}
     <div class="list-header">
-      <div class="segmented" role="group" aria-label="Ordenar por">
-        <button class:active={sortBy === "size"} onclick={() => (sortBy = "size")}>Tamanho</button>
-        <button class:active={sortBy === "date"} onclick={() => (sortBy = "date")}>Data</button>
+      <div class="sort-tools">
+        <button class="select-all" onclick={toggleAll} disabled={busy !== null}>
+          {allSelected ? "Desmarcar tudo" : "Selecionar tudo"}
+        </button>
+        <div class="segmented" role="group" aria-label="Ordenar por">
+          <button class:active={sortBy === "size"} onclick={() => (sortBy = "size")}>Tamanho</button>
+          <button class:active={sortBy === "date"} onclick={() => (sortBy = "date")}>Data</button>
+        </div>
       </div>
       <button class="destructive" onclick={askEmpty} disabled={busy !== null}>
         {busy === "empty" ? "Esvaziando…" : "Esvaziar Lixeira"}
@@ -474,10 +492,29 @@
     margin: 8px 0 0;
   }
 
+  /* "Selecionar tudo" ao lado do Tamanho/Data. */
+  .sort-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
   .hint {
     margin: 0 0 6px;
     color: var(--text-secondary);
     font-size: 13px;
+  }
+
+  .select-all {
+    padding: 5px 12px;
+    border: none;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
   }
 
   .error {

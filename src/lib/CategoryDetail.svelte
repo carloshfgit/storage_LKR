@@ -97,6 +97,17 @@
   const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
   const plural = (n: number, one: string, many: string) => `${formatCount(n)} ${n === 1 ? one : many}`;
 
+  /** O que a lista mostra e pode ser marcado; "Selecionar tudo" marca exatamente isso. */
+  const selectable = $derived(
+    (files ?? []).filter((f) => f.trashable && !f.path.includes("�")).map((f) => f.path),
+  );
+  const allSelected = $derived(selectable.length > 0 && selectable.every((key) => selection.has(key)));
+
+  function toggleAll() {
+    if (allSelected) selection.clear();
+    else for (const key of selectable) selection.add(key);
+  }
+
   function toggle(path: string) {
     if (!selection.delete(path)) selection.add(path);
   }
@@ -352,9 +363,16 @@
 <section class="card">
   <div class="list-header">
     <h2>{segment.key === "apps_system" ? "Maiores arquivos escaneados" : "Maiores arquivos"}</h2>
-    <div class="segmented" role="group" aria-label="Ordenar por">
-      <button class:active={sortBy === "size"} onclick={() => (sortBy = "size")}>Tamanho</button>
-      <button class:active={sortBy === "date"} onclick={() => (sortBy = "date")}>Data</button>
+    <div class="sort-tools">
+      {#if selectable.length > 0}
+        <button class="select-all" onclick={toggleAll} disabled={busy !== null}>
+          {allSelected ? "Desmarcar tudo" : "Selecionar tudo"}
+        </button>
+      {/if}
+      <div class="segmented" role="group" aria-label="Ordenar por">
+        <button class:active={sortBy === "size"} onclick={() => (sortBy = "size")}>Tamanho</button>
+        <button class:active={sortBy === "date"} onclick={() => (sortBy = "date")}>Data</button>
+      </div>
     </div>
   </div>
 
@@ -366,7 +384,7 @@
   {:else if files.length === 0}
     <p class="muted">Nenhum arquivo nesta categoria.</p>
   {:else}
-    {#if selection.size === 0 && files.some((f) => f.trashable)}
+    {#if selection.size === 0 && selectable.length > 0}
       <p class="hint">Dica: clique no quadrado ao lado de um item para selecioná-lo.</p>
     {/if}
     <ul class="files">
@@ -498,10 +516,29 @@
     margin: 8px 0 0;
   }
 
+  /* "Selecionar tudo" ao lado do Tamanho/Data. */
+  .sort-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
   .hint {
     margin: 0 0 6px;
     color: var(--text-secondary);
     font-size: 13px;
+  }
+
+  .select-all {
+    padding: 5px 12px;
+    border: none;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
   }
 
   .error {

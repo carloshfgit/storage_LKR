@@ -106,6 +106,19 @@
       : (files ?? []).reduce((sum, f) => sum + (selection.has(f.path) ? f.bytes : 0), 0),
   );
 
+  /** O que a lista mostra e pode ser marcado; "Selecionar tudo" marca exatamente isso. */
+  const selectable = $derived(
+    (isCaches ? caches.map((c) => c.path) : (files ?? []).filter((f) => f.trashable).map((f) => f.path)).filter(
+      (path) => !path.includes("�"),
+    ),
+  );
+  const allSelected = $derived(selectable.length > 0 && selectable.every((key) => selection.has(key)));
+
+  function toggleAll() {
+    if (allSelected) selection.clear();
+    else for (const key of selectable) selection.add(key);
+  }
+
   function toggle(path: string) {
     if (!selection.delete(path)) selection.add(path);
   }
@@ -200,9 +213,14 @@
     {#if caches.length === 0}
       <p class="muted">Nenhum cache encontrado.</p>
     {:else}
-      {#if selection.size === 0}
-        <p class="hint">Dica: clique no quadrado ao lado de um item para selecioná-lo.</p>
-      {/if}
+      <div class="list-tools">
+        {#if selection.size === 0}
+          <p class="hint">Dica: clique no quadrado ao lado de um item para selecioná-lo.</p>
+        {/if}
+        <button class="select-all" onclick={toggleAll} disabled={busy}>
+          {allSelected ? "Desmarcar tudo" : "Selecionar tudo"}
+        </button>
+      </div>
       <ul class="caches">
         {#each caches as cache (cache.path)}
           {@const lossy = cache.path.includes("�")}
@@ -244,8 +262,15 @@
   {:else if files.length === 0}
     <p class="muted">Nada a sugerir aqui.</p>
   {:else}
-    {#if selection.size === 0}
-      <p class="hint">Dica: clique no quadrado ao lado de um item para selecioná-lo.</p>
+    {#if selectable.length > 0}
+      <div class="list-tools">
+        {#if selection.size === 0}
+          <p class="hint">Dica: clique no quadrado ao lado de um item para selecioná-lo.</p>
+        {/if}
+        <button class="select-all" onclick={toggleAll} disabled={busy}>
+          {allSelected ? "Desmarcar tudo" : "Selecionar tudo"}
+        </button>
+      </div>
     {/if}
     <ul>
       {#each files as file (file.path)}
@@ -348,10 +373,30 @@
     margin: 8px 0 0;
   }
 
-  .hint {
+  .list-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     margin: 0 0 6px;
+  }
+
+  .hint {
+    margin: 0;
     color: var(--text-secondary);
     font-size: 13px;
+  }
+
+  .select-all {
+    margin-left: auto;
+    padding: 5px 12px;
+    border: none;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
   }
 
   .error {
