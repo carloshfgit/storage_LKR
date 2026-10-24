@@ -318,10 +318,19 @@ export interface CoreSample {
   freq_mhz: number | null;
 }
 
+/** Temperatura com o limiar de alerta do sensor. */
+export interface Temp {
+  celsius: number;
+  hot_c: number;
+  /** Sensor da placa (ACPI), não da peça. */
+  approximate: boolean;
+}
+
 export interface CpuSample {
   usage_pct: number | null;
   freq_avg_mhz: number | null;
   freq_max_mhz: number | null;
+  temp: Temp | null;
   /** Só os núcleos online. */
   cores: CoreSample[];
 }
@@ -361,6 +370,9 @@ export interface DiskIo {
   read_bps: number | null;
   write_bps: number | null;
   busy_pct: number | null;
+  temp: Temp | null;
+  /** Comando que liga o sensor (SATA sem o `drivetemp`). */
+  temp_hint: string | null;
 }
 
 export interface NetIface {
@@ -380,6 +392,31 @@ export interface NetSample {
   interfaces: NetIface[];
 }
 
+export type BatteryStatus = "charging" | "discharging" | "full" | "not_charging" | "unknown";
+
+export interface BatterySample {
+  name: string;
+  model: string | null;
+  pct: number | null;
+  status: BatteryStatus;
+  energy_now_wh: number | null;
+  energy_full_wh: number | null;
+  energy_full_design_wh: number | null;
+  power_w: number | null;
+  /** Capacidade atual / de fábrica, em %. */
+  health_pct: number | null;
+  cycles: number | null;
+}
+
+export interface BatteryTotal {
+  /** Ponderado pela energia de cada bateria. */
+  pct: number | null;
+  status: BatteryStatus;
+  power_w: number | null;
+  /** Até esvaziar ou até encher; `null` nos primeiros segundos e na tomada. */
+  time_left_s: number | null;
+}
+
 export interface Sample {
   /** ms desde o início da sessão (relógio monotônico). */
   at_ms: number;
@@ -389,6 +426,17 @@ export interface Sample {
   /** Só discos físicos inteiros. */
   disks: DiskIo[];
   net: NetSample;
+  /** Vazio no desktop. */
+  batteries: BatterySample[];
+  battery_total: BatteryTotal | null;
+}
+
+export interface DiskSpec {
+  name: string;
+  model: string | null;
+  kind: DiskKind;
+  rotational: boolean | null;
+  size_bytes: number;
 }
 
 export interface SystemInfo {
@@ -400,6 +448,7 @@ export interface SystemInfo {
   kernel: string | null;
   distro: string | null;
   hostname: string | null;
+  disks: DiskSpec[];
 }
 
 /** Ordem: `sample`* → `stopped` | `error`. */

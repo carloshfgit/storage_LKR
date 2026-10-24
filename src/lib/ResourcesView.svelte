@@ -1,4 +1,5 @@
-<!-- Aba Recursos: CPU, memória, disco e rede em tempo real (PLAN-V2, Etapa 16).
+<!-- Aba Recursos: CPU, memória, disco, rede e bateria em tempo real, e a ficha técnica (PLAN-V2,
+     Etapas 16 e 17).
      Só coleta com a aba ativa, a página visível e a janela não minimizada (DECISIONS D46). Perder o
      foco não pausa: o caso de uso é olhar o monitor enquanto outra janela faz o trabalho pesado.
      O histórico (60 amostras) fica só aqui e recomeça a cada sessão (D47). -->
@@ -9,14 +10,18 @@
     startMonitor,
     stopMonitor,
     systemInfo,
-    type DiskKind,
     type MonitorEvent,
     type Sample,
     type SystemInfo,
   } from "./api";
-  import { formatBytes, formatDuration, formatMHz, formatPercent, formatRate } from "./format";
+  import BatteryCard from "./BatteryCard.svelte";
+  import CommandLine from "./CommandLine.svelte";
+  import { formatBytes, formatMHz, formatPercent, formatRate } from "./format";
   import MetricCard from "./MetricCard.svelte";
+  import { diskKind } from "./resources";
   import Sparkline from "./Sparkline.svelte";
+  import SystemInfoCard from "./SystemInfoCard.svelte";
+  import TempValue from "./TempValue.svelte";
 
   let { active }: { active: boolean } = $props();
 
@@ -90,15 +95,6 @@
   const sumDisks = (s: Sample, key: "read_bps" | "write_bps") =>
     s.disks.some((d) => d[key] !== null) ? s.disks.reduce((sum, d) => sum + (d[key] ?? 0), 0) : null;
 
-  const KIND_LABELS: Record<DiskKind, string> = {
-    nvme: "NVMe",
-    sata: "SATA",
-    usb: "USB",
-    mmc: "eMMC/SD",
-    virtual: "Virtual",
-    other: "Disco",
-  };
-
   const pct = (p: number | null | undefined) => (p == null ? "—" : formatPercent(p / 100));
   const rate = (r: number | null | undefined) => (r == null ? "—" : formatRate(r));
 
@@ -128,9 +124,7 @@
   <header>
     <h1>Recursos</h1>
     <p class="host">
-      {#if info?.hostname}{info.hostname}{/if}{#if info?.distro}<span> · {info.distro}</span>{/if}{#if last}<span>
-          · ligado há {formatDuration(last.uptime_s)}</span
-        >{/if}
+      {#if info?.hostname}{info.hostname}{/if}{#if info?.distro}<span> · {info.distro}</span>{/if}
     </p>
   </header>
 
@@ -144,7 +138,7 @@
   {:else}
     <div class="grid">
       <MetricCard title="Processador" value={pct(last.cpu.usage_pct)} subtitle={info?.cpu_model ?? undefined}>
-        <p class="meta">{cpuSubtitle}</p>
+        <p class="meta">{cpuSubtitle}<span class="temp-slot"><TempValue temp={last.cpu.temp} /></span></p>
         <Sparkline
           max={100}
           label="Uso da CPU no último minuto"
@@ -226,13 +220,23 @@
               <li>
                 <span class="name">
                   {d.model ?? d.name}
-                  <small>{d.name} · {KIND_LABELS[d.kind]}{d.rotational === true ? " · HD" : d.rotational === false ? " · SSD" : ""}</small>
+                  <small>{d.name} · {diskKind(d.kind, d.rotational)}</small>
                 </span>
                 <span class="nums">↓ {rate(d.read_bps)}<br />↑ {rate(d.write_bps)}</span>
-                <span class="busy" title="Tempo com leitura ou gravação em andamento">{pct(d.busy_pct)}</span>
+                <span class="busy">
+                  <span title="Tempo com leitura ou gravação em andamento">{pct(d.busy_pct)}</span>
+                  <TempValue temp={d.temp} />
+                </span>
               </li>
             {/each}
           </ul>
+          {@const hint = last.disks.find((d) => d.temp_hint)?.temp_hint}
+          {#if hint}
+            <p class="meta hint">
+              Para ver a temperatura do disco SATA, carregue o módulo do sensor (vale até reiniciar):
+            </p>
+            <CommandLine command={hint} />
+          {/if}
         {/if}
       </MetricCard>
 
@@ -269,6 +273,14 @@
           </ul>
         {/if}
       </MetricCard>
+
+      {#if last.battery_total && last.batteries.length > 0}
+        <BatteryCard batteries={last.batteries} total={last.battery_total} />
+      {/if}
+
+      {#if info}
+        <SystemInfoCard {info} uptime={last.uptime_s} />
+      {/if}
     </div>
   {/if}
 </div>
@@ -431,7 +443,18 @@
     white-space: nowrap;
   }
 
+  .temp-slot {
+    float: right;
+  }
+
+  .hint {
+    margin: 6px 0 0;
+  }
+
   .busy {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
     min-width: 44px;
     color: var(--text-secondary);
     font-size: 12px;

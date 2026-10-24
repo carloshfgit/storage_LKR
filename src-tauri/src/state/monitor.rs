@@ -137,6 +137,7 @@ mod tests {
                 usage_pct: None,
                 freq_avg_mhz: None,
                 freq_max_mhz: None,
+                temp: None,
                 cores: Vec::new(),
             },
             mem: MemSample {
@@ -156,6 +157,8 @@ mod tests {
                 tx_session: 0,
                 interfaces: Vec::new(),
             },
+            batteries: Vec::new(),
+            battery_total: None,
         }
     }
 

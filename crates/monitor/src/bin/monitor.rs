@@ -92,6 +92,13 @@ fn print_line(s: &Sample, cores: bool) {
         gb(s.mem.total),
         gb(s.mem.swap_used),
     );
+    if let Some(t) = s.cpu.temp {
+        line += &format!(
+            " {:.0} °C{}",
+            t.celsius,
+            if t.approximate { "~" } else { "" }
+        );
+    }
     if let Some(z) = &s.mem.zram {
         line += &format!(" zram {}→{}", gb(z.orig_bytes), gb(z.compr_bytes));
     }
@@ -106,6 +113,9 @@ fn print_line(s: &Sample, cores: bool) {
             rate(d.write_bps),
             pct(d.busy_pct)
         );
+        if let Some(t) = d.temp {
+            line += &format!(" {:.0} °C", t.celsius);
+        }
     }
     line += &format!(
         " | rede ↓{} ↑{} (sessão ↓{} ↑{})",
@@ -114,6 +124,17 @@ fn print_line(s: &Sample, cores: bool) {
         mb(s.net.rx_session),
         mb(s.net.tx_session)
     );
+    if let Some(b) = &s.battery_total {
+        line += &format!(
+            " | bateria {} {:?} {}",
+            pct(b.pct),
+            b.status,
+            b.power_w.map_or("—".into(), |w| format!("{w:.1} W"))
+        );
+        if let Some(t) = b.time_left_s {
+            line += &format!(" {}h{:02}", t / 3600, t / 60 % 60);
+        }
+    }
     println!("{line}");
     if cores {
         let per: Vec<String> = s

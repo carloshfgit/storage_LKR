@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::model::DiskKind;
+use crate::sensors::{self, TempSensor};
 
 /// O `diskstats` sempre conta setores de 512 bytes, qualquer que seja o
 /// setor físico do disco.
@@ -35,12 +36,20 @@ pub(crate) fn parse_diskstats(text: &str) -> Vec<DiskStat> {
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DiskMeta {
     pub model: Option<String>,
     pub kind: DiskKind,
     pub rotational: Option<bool>,
+    pub sensor: Option<TempSensor>,
+    pub temp_hint: Option<String>,
 }
+
+/// O SATA só tem temperatura com o módulo `drivetemp` (o Ubuntu traz, mas não carrega).
+pub(crate) const DRIVETEMP_HINT: &str = "sudo modprobe drivetemp";
+
+/// Fabricantes dos discos virtuais: não têm sensor, com ou sem `drivetemp`.
+const VIRTUAL_VENDORS: [&str; 4] = ["QEMU", "VMware", "VBOX", "Msft"];
 
 /// Nomes que nunca são um disco físico próprio: `dm-*` (LVM, LUKS) e `md*`
 /// (RAID) repetem o I/O dos discos embaixo deles; os outros não são discos.
@@ -85,11 +94,22 @@ pub(crate) fn disk_meta(root: &Path, name: &str) -> Option<DiskMeta> {
     } else {
         DiskKind::Other
     };
+    let sensor = sensors::disk_sensor(root, name);
+    // Com o módulo carregado e sem sensor, é o disco que não informa: sem dica.
+    let is_virtual =
+        read("device/vendor").is_some_and(|v| VIRTUAL_VENDORS.iter().any(|p| v.starts_with(p)));
+    let temp_hint = (kind == DiskKind::Sata
+        && sensor.is_none()
+        && !is_virtual
+        && !root.join("sys/module/drivetemp").exists())
+    .then(|| DRIVETEMP_HINT.to_string());
     Some(DiskMeta {
         // eMMC e SD: `device/name`; o resto: `device/model`.
         model: read("device/model").or_else(|| read("device/name")),
         kind,
         rotational: read("queue/rotational").map(|r| r == "1"),
+        sensor,
+        temp_hint,
     })
 }
 
@@ -192,6 +212,28 @@ mod tests {
             (DiskKind::Mmc, Some("DA4064"))
         );
         assert_eq!(mmc.rotational, None);
+    }
+
+    #[test]
+    fn drivetemp_hint_only_for_real_sata_without_module() {
+        let fx = machine();
+        // sda: SATA sem sensor e sem o módulo → dica; o pendrive USB não.
+        assert_eq!(
+            disk_meta(fx.path(), "sda").unwrap().temp_hint.as_deref(),
+            Some(DRIVETEMP_HINT)
+        );
+        assert_eq!(disk_meta(fx.path(), "sdb").unwrap().temp_hint, None);
+        assert_eq!(disk_meta(fx.path(), "nvme0n1").unwrap().temp_hint, None);
+        // Com o módulo carregado, é o disco que não informa.
+        fx.dir("sys/module/drivetemp");
+        assert_eq!(disk_meta(fx.path(), "sda").unwrap().temp_hint, None);
+    }
+
+    #[test]
+    fn virtual_scsi_disk_has_no_hint() {
+        let fx = Fixture::new("qemu");
+        fx.write("sys/block/sda/device/vendor", "QEMU    \n");
+        assert_eq!(disk_meta(fx.path(), "sda").unwrap().temp_hint, None);
     }
 
     #[test]

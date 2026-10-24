@@ -140,6 +140,8 @@ pub(crate) fn cpu_sample(root: &Path, prev: Option<&CpuStat>, cur: &CpuStat) -> 
     let known: Vec<u32> = freqs.iter().flatten().copied().collect();
     CpuSample {
         usage_pct: prev.and_then(|p| usage(p.all, cur.all)),
+        // Preenchida pelo `Sampler`, que guarda o sensor encontrado.
+        temp: None,
         freq_avg_mhz: (!known.is_empty())
             .then(|| (known.iter().map(|&m| m as u64).sum::<u64>() / known.len() as u64) as u32),
         freq_max_mhz: known.iter().max().copied(),

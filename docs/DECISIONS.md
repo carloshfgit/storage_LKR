@@ -55,6 +55,7 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D46](#d46) | Monitor só com a aba Recursos visível; perder o foco não pausa | ✅ | 16 |
 | [D47](#d47) | Histórico de 60 amostras só no frontend | ✅ | 16 |
 | [D48](#d48) | Gráficos em SVG puro, sem biblioteca | ✅ | 16 |
+| [D53](#d53) | Sensores e bateria: escolha do sensor, limiar e as contas do UPower | ✅ | 17 |
 
 ---
 
@@ -673,4 +674,30 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 **Descartado:**
 - `uPlot` (Canvas, ~45 kB): mais rápido com milhares de pontos, mas aqui não há milhares. As cores teriam de ser lidas do CSS em JS e redesenhadas na troca de tema.
 - Canvas próprio: nitidez em HiDPI (`devicePixelRatio`) e acessibilidade ficariam por nossa conta.
+
+### D53 — Sensores e bateria: escolha do sensor, limiar e as contas do UPower <a id="d53"></a>
+(D49 a D52 estão reservadas no PLAN-V2 para a GPU, o "Top 5", as metas de custo e a compatibilidade.)
+
+**Decisão:**
+- **CPU:** um sensor só, escolhido uma vez por uma ordem fixa: o do próprio chip (`coretemp`, `k10temp`/`zenpower` com `Tdie` antes de `Tctl`, `cpu_thermal`), depois a zona `x86_pkg_temp` e, por último, o `acpitz` da placa, mostrado com `~`.
+- **Disco:** o hwmon `nvme` ou `drivetemp` com o mesmo `device` canônico do disco. SATA sem sensor e sem o módulo ganha a dica `sudo modprobe drivetemp`, que o app só mostra (D44).
+- **Limiar de alerta:** 10 °C abaixo do `max` (ou do `crit`) do sensor, sem passar de 85 °C na CPU e 70 °C no disco.
+- **Bateria:** as contas do UPower. A energia vem em Wh pela tensão nominal quando o driver informa carga (µAh), e a potência usa a mesma tensão. O nível total é ponderado pela energia. O tempo restante só aparece com potência de pelo menos 0,1 W e depois de 10 s de sessão.
+
+**Por quê:**
+- Uma ordem fixa dá o mesmo sensor que o `sensors` e o GNOME mostram como "CPU". Placas como a Dell expõem mais de um "CPU" (`dell_smm`), e o do chip é o mais preciso. O `acpitz` mede a placa, às vezes longe da CPU, por isso é o último e vem marcado.
+- Ler só `name` e `temp*_label` na busca evita acordar uma GPU dedicada suspensa, cujo `temp*_input` a liga (Etapa 18).
+- O `max` do `coretemp` é o TjMax (100 °C), quando a CPU já reduz o clock. Avisar 10 °C antes, ou a partir do padrão, dá tempo de reagir. No NVMe o `max` costuma ser ~82 °C, e o padrão de 70 °C prevalece.
+- Bater com o UPower é o que o usuário pode conferir (`upower -i`, ícone do GNOME). Nesta máquina, com a tensão do momento a potência dava 0,0129 W contra 0,0114 W do UPower. Com a nominal, os dois batem, e o tempo restante (Wh ÷ W) fica coerente com a energia mostrada.
+- Duas baterias: com 0% numa de 20 Wh e 100% noutra de 60 Wh, a média simples daria 50%, mas restam 75% da energia.
+- Os primeiros segundos: muitos firmwares atualizam a corrente a cada poucos segundos, e o primeiro valor costuma ser o da carga anterior.
+
+**Descartado:**
+- Média de todos os sensores de CPU, ou o maior deles: misturaria a placa com o chip.
+- Carregar o `drivetemp` pelo app (via `pkexec`): exigiria root pela UI (D19). A dica com o comando deixa a decisão com o usuário.
+- Ler o UPower pelo D-Bus: daria os mesmos números, mas com dependência e latência a mais, e não funciona em sistemas sem o serviço (containers, instalações mínimas).
+
+**Limitações:**
+- O tempo restante oscila com a carga do momento, como no GNOME.
+- Sem `voltage_*`, uma bateria no formato de carga fica sem energia e sem potência: só o nível (`capacity`) e a saúde (se houver `charge_full_design`).
 

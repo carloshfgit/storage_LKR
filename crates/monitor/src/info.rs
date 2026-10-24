@@ -6,6 +6,9 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use crate::disk_io::{self, SECTOR};
+use crate::model::DiskKind;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SystemInfo {
     pub cpu_model: Option<String>,
@@ -17,6 +20,17 @@ pub struct SystemInfo {
     pub kernel: Option<String>,
     pub distro: Option<String>,
     pub hostname: Option<String>,
+    /// Discos físicos, na ordem do nome.
+    pub disks: Vec<DiskSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DiskSpec {
+    pub name: String,
+    pub model: Option<String>,
+    pub kind: DiskKind,
+    pub rotational: Option<bool>,
+    pub size_bytes: u64,
 }
 
 pub fn system_info(root: &Path) -> SystemInfo {
@@ -52,7 +66,39 @@ pub fn system_info(root: &Path) -> SystemInfo {
             .or_else(|| read("usr/lib/os-release"))
             .and_then(|t| parse_os_release(&t)),
         hostname: read("proc/sys/kernel/hostname").and_then(clean),
+        disks: disks(root),
     }
+}
+
+/// Os mesmos discos do card de Disco. Leitor de cartão vazio (tamanho 0) fica de fora.
+fn disks(root: &Path) -> Vec<DiskSpec> {
+    let block = root.join("sys/block");
+    let Ok(entries) = fs::read_dir(&block) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let meta = disk_io::disk_meta(root, &name)?;
+            let sectors: u64 = fs::read_to_string(block.join(&name).join("size"))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()?;
+            (sectors > 0).then(|| DiskSpec {
+                model: meta.model,
+                kind: meta.kind,
+                rotational: meta.rotational,
+                size_bytes: sectors * SECTOR,
+                name,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -189,6 +235,24 @@ core id\t\t: 1
         assert_eq!(i.distro.as_deref(), Some("Ubuntu 24.04.3 LTS"));
         assert_eq!(i.hostname.as_deref(), Some("notebook"));
         assert_eq!(i.threads, 4);
+    }
+
+    #[test]
+    fn physical_disks_with_size() {
+        let fx = Fixture::new("info-disks");
+        fx.write("sys/block/sda/size", "468862128\n")
+            .write("sys/block/sda/device/model", "KINGSTON SA400S37240G\n")
+            .write("sys/block/sda/queue/rotational", "0\n")
+            .write("sys/block/nvme0n1/size", "1953525168\n")
+            .write("sys/block/nvme0n1/device/model", "Samsung SSD 980 1TB\n")
+            .write("sys/block/sdc/size", "0\n")
+            .dir("sys/block/sdc/device")
+            .write("sys/block/loop0/size", "100\n");
+        let disks = system_info(fx.path()).disks;
+        let names: Vec<&str> = disks.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["nvme0n1", "sda"], "sem loop e sem leitor vazio");
+        assert_eq!(disks[1].size_bytes, 468862128 * 512);
+        assert_eq!(disks[0].kind, DiskKind::Nvme);
     }
 
     #[test]

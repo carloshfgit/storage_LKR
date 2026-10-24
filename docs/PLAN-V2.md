@@ -167,19 +167,36 @@ Primeira versão visível: o seletor de abas e os cards da Etapa 15 com gráfico
 
 ## Etapa 17 — Sensores, bateria e ficha técnica
 Tudo que depende de `/sys/class/hwmon`, `/sys/class/power_supply` e varia de máquina para máquina.
-- [ ] `sensors.rs`: varre `/sys/class/hwmon/hwmon*` uma vez (no `Sampler::new`) e guarda os arquivos de cada sensor; depois só lê `temp*_input`. Ordem de preferência para a **CPU**: `coretemp` (`Package id 0`), `k10temp` (`Tctl`/`Tdie`), `zenpower`, `cpu_thermal` (ARM); sem nenhum, a `thermal_zone` do tipo `x86_pkg_temp`. `acpitz` só como último recurso, marcado como aproximado.
-- [ ] Temperatura do **disco**: `nvme` (hwmon ligado a `/sys/block/nvmeXnY/device`) e `drivetemp` (SATA, liga o hwmon ao disco pelo `device`). SATA sem o módulo: "—" com a dica `sudo modprobe drivetemp` (o app só mostra o comando, D44). eMMC, cartão SD, USB e disco de VM: "—" sem dica (não há sensor).
-- [ ] `battery.rs`: **todas** as `/sys/class/power_supply/*` com `type = Battery` e `scope` diferente de `Device` (fora mouse e fone Bluetooth). Aceita os nomes `BAT*`, `CMB*` e outros: o filtro é o `type`, não o nome. Aceita os dois formatos: `energy_*` (µWh) + `power_now`, ou `charge_*` (µAh) + `current_now` × `voltage_now` (convertido para µWh com `voltage_min_design`, ou `voltage_now` sem ele). Saúde = `full / full_design`; tempo restante = energia restante / potência (descarregando) ou faltante / potência (carregando), escondido com potência ≈ 0 ou nos primeiros 10 s (valor instável). Ciclos de `cycle_count` quando ≠ 0. Com mais de uma bateria (ThinkPad com interna + externa), `battery_total` soma energia e potência, e o nível é ponderado pela energia de cada uma, como o UPower.
-- [ ] `system_info()` (a base já existe desde a Etapa 16; falta acrescentar discos e GPUs): modelo da CPU (`/proc/cpuinfo` `model name`, ou `/sys/firmware/devicetree/base/model`), núcleos físicos e threads, RAM total, kernel (`uname`), distro (`/etc/os-release` `PRETTY_NAME`), hostname, discos (modelo, tamanho, SSD/HD por `queue/rotational`, NVMe/SATA), GPUs (da Etapa 18).
-- [ ] UI: temperatura nos cards de CPU e Disco (cor muda acima de um limiar do próprio sensor: `temp*_crit` ou `temp*_max` quando existirem, senão 85 °C para CPU e 70 °C para disco); card **Bateria** (só com bateria: nível total com barra, estado em pt-BR, potência em W, tempo restante; saúde e ciclos de cada bateria, uma linha por bateria quando houver mais de uma); card **Ficha técnica** (lista chave/valor, uptime atualizado a cada amostra).
-- [ ] Testes com árvores falsas de `sys/`: `coretemp` com vários núcleos, só `k10temp`, só `acpitz`, sem nenhum sensor; `cpu_thermal` (ARM); NVMe com hwmon, SATA com e sem `drivetemp`, eMMC; bateria `energy_*` e `charge_*`, carregando, descarregando, `full_design` ausente, `BAT0` + `BAT1`, mouse Bluetooth ignorado; `/etc/os-release` sem `PRETTY_NAME`.
+- [x] `sensors.rs`: varre `/sys/class/hwmon/hwmon*` uma vez (no `Sampler::new`) e guarda os arquivos de cada sensor; depois só lê `temp*_input`. Ordem de preferência para a **CPU**: `coretemp` (`Package id 0`), `k10temp` (`Tctl`/`Tdie`), `zenpower`, `cpu_thermal` (ARM); sem nenhum, a `thermal_zone` do tipo `x86_pkg_temp`. `acpitz` só como último recurso, marcado como aproximado.
+- [x] Temperatura do **disco**: `nvme` (hwmon ligado a `/sys/block/nvmeXnY/device`) e `drivetemp` (SATA, liga o hwmon ao disco pelo `device`). SATA sem o módulo: "—" com a dica `sudo modprobe drivetemp` (o app só mostra o comando, D44). eMMC, cartão SD, USB e disco de VM: "—" sem dica (não há sensor).
+- [x] `battery.rs`: **todas** as `/sys/class/power_supply/*` com `type = Battery` e `scope` diferente de `Device` (fora mouse e fone Bluetooth). Aceita os nomes `BAT*`, `CMB*` e outros: o filtro é o `type`, não o nome. Aceita os dois formatos: `energy_*` (µWh) + `power_now`, ou `charge_*` (µAh) + `current_now` × `voltage_now` (convertido para µWh com `voltage_min_design`, ou `voltage_now` sem ele). Saúde = `full / full_design`; tempo restante = energia restante / potência (descarregando) ou faltante / potência (carregando), escondido com potência ≈ 0 ou nos primeiros 10 s (valor instável). Ciclos de `cycle_count` quando ≠ 0. Com mais de uma bateria (ThinkPad com interna + externa), `battery_total` soma energia e potência, e o nível é ponderado pela energia de cada uma, como o UPower.
+- [x] `system_info()` (a base veio da Etapa 16; aqui entraram os discos, com tamanho; as GPUs ficam para a 18): modelo da CPU (`/proc/cpuinfo` `model name`, ou `/sys/firmware/devicetree/base/model`), núcleos físicos e threads, RAM total, kernel (`/proc/sys/kernel/osrelease`), distro (`/etc/os-release` `PRETTY_NAME`), hostname, discos (modelo, tamanho, SSD/HD por `queue/rotational`, NVMe/SATA), GPUs (da Etapa 18).
+- [x] UI: temperatura nos cards de CPU e Disco (vermelha a partir do limiar: 10 °C abaixo do `temp*_max`, ou do `temp*_crit`, sem passar de 85 °C para CPU e 70 °C para disco; o `max` do `coretemp` é o TjMax de 100 °C, alto demais para avisar); card **Bateria** (só com bateria: nível total com barra, estado em pt-BR, potência em W, tempo restante; saúde e ciclos de cada bateria, uma linha por bateria quando houver mais de uma); card **Ficha técnica** (lista chave/valor, uptime atualizado a cada amostra).
+- [x] Testes com árvores falsas de `sys/`: `coretemp` com vários núcleos, só `k10temp`, só `acpitz`, sem nenhum sensor; `cpu_thermal` (ARM); NVMe com hwmon, SATA com e sem `drivetemp`, eMMC; bateria `energy_*` e `charge_*`, carregando, descarregando, `full_design` ausente, `BAT0` + `BAT1`, mouse Bluetooth ignorado; `/etc/os-release` sem `PRETTY_NAME`.
 
 **Pronto quando:**
 - Na máquina de teste, temperaturas a ±1 °C do `sensors` e bateria igual ao `upower -i <bateria>` (nível, potência, saúde).
 - Todos os formatos da "Matriz de validação" têm teste com árvore falsa e passam.
 - Sem bateria o card some; sem sensor de CPU ou de disco, o campo mostra "—" sem quebrar o card.
 
-**Resultado:** _a preencher._
+**Resultado (23/10/2026):**
+
+| Medida | `monitor` | Referência |
+|---|---|---|
+| CPU (`coretemp`, `Package id 0`) | 45 °C, limiar 85 °C | `temp1_input` do `coretemp`: 45000 (o `lm-sensors` não está instalado; ele lê o mesmo arquivo) |
+| Disco (`sda`, SATA) | "—" com a dica `sudo modprobe drivetemp` | `drivetemp` não carregado |
+| Bateria, energia | 23,0052 Wh de 41,9976 Wh de fábrica | `upower`: 23,0052 Wh e 41,9976 Wh |
+| Bateria, saúde | 54,777% | `upower` `capacity`: 54,7774% |
+| Bateria, potência (cheia, na tomada) | 0,0114 W (escondida na UI, abaixo de 0,1 W) | `upower` `energy-rate`: 0,0114 W |
+| Bateria, ciclos | não informado (`cycle_count = 0`) | — |
+
+- 18 testes novos no crate (71 no total; 156 no workspace), clippy limpo, `npm run check` sem erros. A Matriz de validação de CPU, disco e bateria está coberta por árvores falsas.
+- A primeira versão calculava a potência com a tensão do momento (0,0129 W). O UPower usa a tensão nominal, a mesma da conversão de µAh para Wh. Com ela, os dois batem, e o tempo restante (Wh ÷ W) fica coerente.
+- Nesta máquina, a temperatura do `dell_smm` ("CPU", 44 °C) também existe, mas o `coretemp` vem antes na ordem: é o sensor do próprio chip.
+- ⏳ **Falta conferir**, o que precisa ser feito por você:
+  1. Descarregando (fora da tomada): potência e tempo restante iguais ao `upower -i /org/freedesktop/UPower/devices/battery_BAT0` (`energy-rate`, `time to empty`), depois dos primeiros 10 s.
+  2. Rodar `sudo modprobe drivetemp`, reabrir a aba e ver a temperatura do SSD (e a dica sumir).
+  3. Conferência visual dos cards Bateria e Ficha técnica, nos temas claro e escuro.
 
 ---
 
@@ -251,12 +268,12 @@ Cada formato tem um teste com árvore falsa de `proc/`/`sys/` (montada a partir 
 
 | Área | Formatos cobertos por teste | Real |
 |---|---|---|
-| CPU | Intel (`coretemp`), AMD (`k10temp`, `zenpower`), ARM (`cpu_thermal`), sem sensor, sem `cpufreq` (VM), de 2 a 64 threads, núcleo desligado | _a preencher_ |
+| CPU | Intel (`coretemp`), AMD (`k10temp`, `zenpower`), ARM (`cpu_thermal`), sem sensor, sem `cpufreq` (VM), de 2 a 64 threads, núcleo desligado | Intel i7-7500U (`coretemp`), 4 threads |
 | Memória | Com swap em arquivo/partição, sem swap, zRAM, kernel sem PSI | _a preencher_ |
-| Disco | SATA (com/sem `drivetemp`), NVMe, eMMC/SD, USB, virtio, `md` e `dm` ignorados | _a preencher_ |
+| Disco | SATA (com/sem `drivetemp`), NVMe, eMMC/SD, USB, virtio, `md` e `dm` ignorados | SATA sem `drivetemp` |
 | Rede | Cabo, Wi-Fi, os dois juntos, interfaces virtuais e VPN ignoradas, contador reiniciado | _a preencher_ |
 | GPU | AMD dedicada/integrada/suspensa, NVIDIA com/sem `nvidia-smi`, `nouveau`, Intel `i915`/`xe`, híbrida, sem GPU, sem `lspci` | _a preencher_ |
-| Bateria | `energy_*`, `charge_*`, duas baterias, sem `full_design`, periférico Bluetooth, desktop sem bateria | _a preencher_ |
+| Bateria | `energy_*`, `charge_*`, duas baterias, sem `full_design`, periférico Bluetooth, desktop sem bateria | `charge_*` (Dell), cheia na tomada |
 | Sessão | X11 e Wayland (pausa ao minimizar), 1366×768, HiDPI 200% | _a preencher_ |
 
 ## Riscos e pontos a validar

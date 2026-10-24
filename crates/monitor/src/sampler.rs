@@ -4,13 +4,19 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use crate::battery;
 use crate::cpu::{self, CpuStat};
 use crate::disk_io::{self, DiskMeta, DiskStat, SECTOR};
 use crate::mem;
 use crate::model::{DiskIo, NetIface, NetSample, Sample};
 use crate::net::{self, IfaceStat, counter_delta};
+use crate::sensors::{self, TempSensor};
+
+/// O tempo restante da bateria só aparece depois disso: a potência das
+/// primeiras leituras oscila (o firmware atualiza a cada poucos segundos).
+const BATTERY_SETTLE: Duration = Duration::from_secs(10);
 
 /// Contadores da amostra anterior.
 struct Prev {
@@ -30,6 +36,8 @@ pub struct Sampler {
     disk_meta: HashMap<String, Option<DiskMeta>>,
     /// Mesma ideia para as interfaces: `Some(wireless)` se for física.
     iface_meta: HashMap<String, Option<bool>>,
+    /// Sensor de temperatura da CPU, procurado na primeira amostra.
+    cpu_sensor: Option<Option<TempSensor>>,
     /// Buffer reaproveitado para os arquivos do `/proc` (ver `read_into`).
     buf: Vec<u8>,
     rx_session: u64,
@@ -45,6 +53,7 @@ impl Sampler {
             prev: None,
             disk_meta: HashMap::new(),
             iface_meta: HashMap::new(),
+            cpu_sensor: None,
             buf: vec![0; 16 * 1024],
             rx_session: 0,
             tx_session: 0,
@@ -87,7 +96,12 @@ impl Sampler {
             .map(|p| now.saturating_duration_since(p.at).as_secs_f64())
             .filter(|&dt| dt > 0.0);
 
-        let cpu = cpu::cpu_sample(&root, prev.map(|p| &p.cpu), &cpu_stat);
+        let mut cpu = cpu::cpu_sample(&root, prev.map(|p| &p.cpu), &cpu_stat);
+        cpu.temp = self
+            .cpu_sensor
+            .get_or_insert_with(|| sensors::cpu_sensor(&root))
+            .as_ref()
+            .and_then(TempSensor::read);
         let mem = mem::mem_sample(&root, meminfo);
 
         self.disk_meta
@@ -114,6 +128,8 @@ impl Sampler {
                 read_bps: rate(|d| d.read_sectors, SECTOR as f64),
                 write_bps: rate(|d| d.write_sectors, SECTOR as f64),
                 busy_pct: rate(|d| d.io_ms, 0.1).map(|p| p.min(100.0) as f32),
+                temp: meta.sensor.as_ref().and_then(TempSensor::read),
+                temp_hint: meta.temp_hint.clone(),
             });
             disk_now.insert(stat.name.clone(), stat);
         }
@@ -161,6 +177,10 @@ impl Sampler {
             disks: disk_now,
             net: net_now,
         });
+        let batteries = battery::batteries(&root);
+        let settled = now.saturating_duration_since(self.start) >= BATTERY_SETTLE;
+        let battery_total = battery::total(&batteries, settled);
+
         Ok(Sample {
             at_ms: now.saturating_duration_since(self.start).as_millis() as u64,
             uptime_s,
@@ -168,6 +188,8 @@ impl Sampler {
             mem,
             disks,
             net,
+            batteries,
+            battery_total,
         })
     }
 }
