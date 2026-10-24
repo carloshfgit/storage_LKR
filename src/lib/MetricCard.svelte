@@ -1,9 +1,12 @@
 <!-- Card da aba Recursos: título, valor grande, subtítulo e o conteúdo (gráfico, listas). -->
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import Icon, { type IconName } from "./Icon.svelte";
 
   let {
     title,
+    icon,
+    tint = "var(--text-secondary)",
     value,
     subtitle,
     badge,
@@ -12,6 +15,10 @@
     children,
   }: {
     title: string;
+    /** Ícone ao lado do título. */
+    icon?: IconName;
+    /** Cor do ícone: a da série do gráfico do card. */
+    tint?: string;
     value: string;
     subtitle?: string;
     /** Selo de alerta ao lado do título, como "Sob pressão". */
@@ -26,6 +33,9 @@
 
 <section class="card" class:wide aria-label={title}>
   <header>
+    {#if icon}
+      <span class="icon" style:color={tint}><Icon name={icon} /></span>
+    {/if}
     <h2>{title}</h2>
     {#if badge}
       <span class="badge" title={badge.hint}>{badge.text}</span>
@@ -61,6 +71,11 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  .icon {
+    display: flex;
+    margin-right: -2px;
   }
 
   h2 {

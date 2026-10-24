@@ -25,7 +25,7 @@
   );
 </script>
 
-<MetricCard title="Ficha técnica" value={info.distro ?? "Linux"} subtitle={info.hostname ?? undefined} wide>
+<MetricCard title="Ficha técnica" icon="computer" value={info.distro ?? "Linux"} subtitle={info.hostname ?? undefined} wide>
   <dl class="rows">
     <div>
       <dt>Processador</dt>

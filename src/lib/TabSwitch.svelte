@@ -4,11 +4,13 @@
 </script>
 
 <script lang="ts">
+  import Icon, { type IconName } from "./Icon.svelte";
+
   let { value, onchange }: { value: Tab; onchange: (tab: Tab) => void } = $props();
 
-  const TABS: { id: Tab; label: string }[] = [
-    { id: "storage", label: "Armazenamento" },
-    { id: "resources", label: "Recursos" },
+  const TABS: { id: Tab; label: string; icon: IconName }[] = [
+    { id: "storage", label: "Armazenamento", icon: "drive" },
+    { id: "resources", label: "Recursos", icon: "gauge" },
   ];
 
   const index = $derived(TABS.findIndex((t) => t.id === value));
@@ -42,6 +44,7 @@
       onclick={() => onchange(tab.id)}
       {onkeydown}
     >
+      <Icon name={tab.icon} size={15} />
       {tab.label}
     </button>
   {/each}
@@ -52,7 +55,7 @@
     position: relative;
     display: grid;
     grid-template-columns: repeat(var(--count), 1fr);
-    width: min(100%, 340px);
+    width: min(100%, 380px);
     margin: 0 auto 20px;
     padding: 2px;
     border-radius: 9px;
@@ -77,6 +80,10 @@
 
   button {
     position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
     padding: 6px 12px;
     border: none;
     border-radius: 7px;

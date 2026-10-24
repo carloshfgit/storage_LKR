@@ -59,7 +59,7 @@
   }
 </script>
 
-<MetricCard title="GPU" {value} {subtitle}>
+<MetricCard title="GPU" icon="gpu" tint="var(--res-gpu)" {value} {subtitle}>
   {#snippet actions()}
     {#if gpus.length > 1}
       <MiniTabs

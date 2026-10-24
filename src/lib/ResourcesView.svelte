@@ -143,7 +143,7 @@
     <section class="card notice"><span>Lendo os recursos…</span></section>
   {:else}
     <div class="grid">
-      <MetricCard title="Processador" value={pct(last.cpu.usage_pct)} subtitle={info?.cpu_model ?? undefined}>
+      <MetricCard title="Processador" icon="cpu" tint="var(--res-cpu)" value={pct(last.cpu.usage_pct)} subtitle={info?.cpu_model ?? undefined}>
         <p class="meta">{cpuSubtitle}<span class="temp-slot"><TempValue temp={last.cpu.temp} /></span></p>
         <Sparkline
           max={100}
@@ -163,6 +163,8 @@
 
       <MetricCard
         title="Memória"
+        icon="memory"
+        tint="var(--res-mem)"
         value={formatBytes(last.mem.used)}
         subtitle="de {formatBytes(last.mem.total)} · {pct(usedPct(last))} em uso"
         badge={memPressure}
@@ -202,6 +204,8 @@
 
       <MetricCard
         title="Disco"
+        icon="drive"
+        tint="var(--res-disk-read)"
         value="↓ {rate(sumDisks(last, 'read_bps'))}"
         subtitle="↑ {rate(sumDisks(last, 'write_bps'))} gravando"
       >
@@ -246,7 +250,7 @@
         {/if}
       </MetricCard>
 
-      <MetricCard title="Rede" value="↓ {rate(last.net.rx_bps)}" subtitle="↑ {rate(last.net.tx_bps)} enviando">
+      <MetricCard title="Rede" icon="network" tint="var(--res-net-rx)" value="↓ {rate(last.net.rx_bps)}" subtitle="↑ {rate(last.net.tx_bps)} enviando">
         <Sparkline
           floor={1e5}
           format={formatRate}

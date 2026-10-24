@@ -87,6 +87,8 @@
 
 <MetricCard
   title="Processos"
+  icon="processes"
+  tint={color}
   value={top ? formatCount(top.total) : "—"}
   subtitle="em execução · agrupados por aplicativo"
 >
