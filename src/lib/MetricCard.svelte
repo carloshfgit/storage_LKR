@@ -7,6 +7,7 @@
     value,
     subtitle,
     badge,
+    actions,
     children,
   }: {
     title: string;
@@ -14,6 +15,8 @@
     subtitle?: string;
     /** Selo de alerta ao lado do título, como "Sob pressão". */
     badge?: { text: string; hint: string };
+    /** Controles à direita do título, como as abas das GPUs. */
+    actions?: Snippet;
     children?: Snippet;
   } = $props();
 </script>
@@ -23,6 +26,9 @@
     <h2>{title}</h2>
     {#if badge}
       <span class="badge" title={badge.hint}>{badge.text}</span>
+    {/if}
+    {#if actions}
+      <div class="actions">{@render actions()}</div>
     {/if}
   </header>
   <p class="value">{value}</p>
@@ -55,6 +61,10 @@
     color: var(--text-secondary);
     font-size: 13px;
     font-weight: 600;
+  }
+
+  .actions {
+    margin-left: auto;
   }
 
   .badge {

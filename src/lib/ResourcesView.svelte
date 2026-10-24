@@ -1,5 +1,5 @@
-<!-- Aba Recursos: CPU, memória, disco, rede e bateria em tempo real, e a ficha técnica (PLAN-V2,
-     Etapas 16 e 17).
+<!-- Aba Recursos: CPU, memória, disco, rede, GPU e bateria em tempo real, e a ficha técnica (PLAN-V2,
+     Etapas 16 a 18).
      Só coleta com a aba ativa, a página visível e a janela não minimizada (DECISIONS D46). Perder o
      foco não pausa: o caso de uso é olhar o monitor enquanto outra janela faz o trabalho pesado.
      O histórico (60 amostras) fica só aqui e recomeça a cada sessão (D47). -->
@@ -17,6 +17,7 @@
   import BatteryCard from "./BatteryCard.svelte";
   import CommandLine from "./CommandLine.svelte";
   import { formatBytes, formatMHz, formatPercent, formatRate } from "./format";
+  import GpuCard from "./GpuCard.svelte";
   import MetricCard from "./MetricCard.svelte";
   import { diskKind } from "./resources";
   import Sparkline from "./Sparkline.svelte";
@@ -273,6 +274,10 @@
           </ul>
         {/if}
       </MetricCard>
+
+      {#if last.gpus.length > 0}
+        <GpuCard {samples} />
+      {/if}
 
       {#if last.battery_total && last.batteries.length > 0}
         <BatteryCard batteries={last.batteries} total={last.battery_total} />

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use crate::battery;
 use crate::cpu::{self, CpuStat};
 use crate::disk_io::{self, DiskMeta, DiskStat, SECTOR};
+use crate::gpu::Gpus;
 use crate::mem;
 use crate::model::{DiskIo, NetIface, NetSample, Sample};
 use crate::net::{self, IfaceStat, counter_delta};
@@ -38,6 +39,9 @@ pub struct Sampler {
     iface_meta: HashMap<String, Option<bool>>,
     /// Sensor de temperatura da CPU, procurado na primeira amostra.
     cpu_sensor: Option<Option<TempSensor>>,
+    /// Placas de vídeo, procuradas na primeira amostra. Com uma NVIDIA, guarda
+    /// o `nvidia-smi`, que morre junto com o `Sampler`.
+    gpus: Option<Gpus>,
     /// Buffer reaproveitado para os arquivos do `/proc` (ver `read_into`).
     buf: Vec<u8>,
     rx_session: u64,
@@ -54,6 +58,7 @@ impl Sampler {
             disk_meta: HashMap::new(),
             iface_meta: HashMap::new(),
             cpu_sensor: None,
+            gpus: None,
             buf: vec![0; 16 * 1024],
             rx_session: 0,
             tx_session: 0,
@@ -180,6 +185,10 @@ impl Sampler {
         let batteries = battery::batteries(&root);
         let settled = now.saturating_duration_since(self.start) >= BATTERY_SETTLE;
         let battery_total = battery::total(&batteries, settled);
+        let gpus = self
+            .gpus
+            .get_or_insert_with(|| Gpus::discover(&root))
+            .sample(now);
 
         Ok(Sample {
             at_ms: now.saturating_duration_since(self.start).as_millis() as u64,
@@ -190,6 +199,7 @@ impl Sampler {
             net,
             batteries,
             battery_total,
+            gpus,
         })
     }
 }

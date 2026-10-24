@@ -92,7 +92,7 @@ fn temps(dir: &Path) -> Vec<(u32, Option<String>)> {
 
 /// O primeiro `temp*` cujo rótulo está em `labels` (na ordem de `labels`); sem
 /// nenhum, o primeiro do chip.
-fn pick(dir: &Path, labels: &[&str]) -> Option<u32> {
+pub(crate) fn pick(dir: &Path, labels: &[&str]) -> Option<u32> {
     let temps = temps(dir);
     labels
         .iter()
@@ -108,7 +108,7 @@ fn pick(dir: &Path, labels: &[&str]) -> Option<u32> {
 /// Limiar de alerta: 10 °C abaixo do `max` (ou do `crit`) do sensor, sem
 /// passar do padrão. O `max` do `coretemp` é o TjMax (100 °C), alto demais
 /// para avisar.
-fn sensor(dir: &Path, n: u32, default_hot: f32, approximate: bool) -> TempSensor {
+pub(crate) fn sensor(dir: &Path, n: u32, default_hot: f32, approximate: bool) -> TempSensor {
     let limit = ["max", "crit"].iter().find_map(|k| {
         let milli: i64 = fs::read_to_string(dir.join(format!("temp{n}_{k}")))
             .ok()?

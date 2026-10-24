@@ -1,11 +1,17 @@
 <!-- Card Ficha técnica da aba Recursos: o que não muda, mais o tempo ligado (a cada amostra). -->
 <script lang="ts">
-  import type { SystemInfo } from "./api";
+  import type { GpuSpec, SystemInfo } from "./api";
   import { formatBytes, formatDuration } from "./format";
   import MetricCard from "./MetricCard.svelte";
-  import { diskKind } from "./resources";
+  import { diskKind, gpuKind, gpuName } from "./resources";
 
   let { info, uptime }: { info: SystemInfo; uptime: number | null } = $props();
+
+  /** "dedicada · amdgpu · 4,29 GB"; sem nome no `pci.ids`, o `vendor:device` para pesquisar. */
+  const gpuDetails = (g: GpuSpec) =>
+    [gpuKind(g), g.driver, g.vram_total ? formatBytes(g.vram_total) : "", g.model ? "" : g.pci_id]
+      .filter(Boolean)
+      .join(" · ");
 
   const cores = $derived(
     info.cores ? `${info.cores} núcleos · ${info.threads} threads` : `${info.threads} threads`,
@@ -26,6 +32,12 @@
       <div>
         <dt>Disco</dt>
         <dd>{d.model ?? d.name}<small>{formatBytes(d.size_bytes)} · {diskKind(d.kind, d.rotational)}</small></dd>
+      </div>
+    {/each}
+    {#each info.gpus as g (g.card)}
+      <div>
+        <dt>GPU</dt>
+        <dd>{gpuName(g)}<small>{gpuDetails(g)}</small></dd>
       </div>
     {/each}
     <div>

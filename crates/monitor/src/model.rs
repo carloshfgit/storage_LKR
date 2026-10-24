@@ -15,6 +15,8 @@ pub struct Sample {
     /// Só baterias do sistema (sem mouse e fone Bluetooth); vazio no desktop.
     pub batteries: Vec<BatterySample>,
     pub battery_total: Option<BatteryTotal>,
+    /// Uma por placa em `/sys/class/drm`; vazio sem GPU (VM, servidor).
+    pub gpus: Vec<GpuSample>,
 }
 
 /// Uma temperatura com o limiar de alerta do sensor.
@@ -158,4 +160,68 @@ pub struct BatteryTotal {
     pub power_w: Option<f64>,
     /// Até esvaziar (descarregando) ou até encher (carregando).
     pub time_left_s: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuVendor {
+    Amd,
+    Nvidia,
+    Intel,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuState {
+    Active,
+    /// Desligada pelo kernel para economizar (`runtime_status = suspended`):
+    /// não é lida, para não acordar.
+    Suspended,
+}
+
+/// Por que faltam números, quando faltam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuNote {
+    /// Intel: uso e consumo só pelo `perf`, com root.
+    NeedsRoot,
+    /// NVIDIA proprietária sem o `nvidia-smi`.
+    NoNvidiaSmi,
+    /// O driver não expõe (`nouveau`, `radeon`, GPU virtual, ARM).
+    NotExposed,
+}
+
+/// O que não muda numa placa: vai para a ficha técnica e para cada amostra.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GpuSpec {
+    /// `card0`, `card1`…: identifica a placa entre as amostras.
+    pub card: String,
+    /// Nome comercial pelo `pci.ids` ("AMD Radeon R7 M445"); `None` sem o
+    /// arquivo ou fora do PCI (a UI monta "GPU AMD (amdgpu)").
+    pub model: Option<String>,
+    pub vendor: GpuVendor,
+    pub driver: Option<String>,
+    /// `vendor:device` em hexadecimal ("1002:6900"); `None` fora do PCI.
+    pub pci_id: Option<String>,
+    /// `None` quando não dá para saber (GPU virtual, driver desconhecido).
+    pub integrated: Option<bool>,
+    pub vram_total: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GpuSample {
+    #[serde(flatten)]
+    pub spec: GpuSpec,
+    pub state: GpuState,
+    pub busy_pct: Option<f32>,
+    pub vram_used: Option<u64>,
+    /// Integradas AMD: memória do sistema que a GPU usa (GTT).
+    pub gtt_used: Option<u64>,
+    pub gtt_total: Option<u64>,
+    pub temp: Option<Temp>,
+    pub power_w: Option<f64>,
+    pub freq_mhz: Option<u32>,
+    pub freq_max_mhz: Option<u32>,
+    pub note: Option<GpuNote>,
 }

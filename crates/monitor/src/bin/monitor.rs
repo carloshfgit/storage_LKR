@@ -1,12 +1,12 @@
 //! CLI de validação do monitor: imprime uma amostra por intervalo, para
-//! comparar com `top`, `free -b`, `iostat -d 1` e `ifstat`.
+//! comparar com `top`, `free -b`, `iostat -d 1`, `ifstat` e as ferramentas da GPU.
 //!
 //! Uso: `monitor [--once] [--interval MS] [--count N] [--json] [--cores]`
 
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use monitor::{Sample, Sampler};
+use monitor::{GpuState, Sample, Sampler};
 
 fn main() -> ExitCode {
     let mut interval = Duration::from_secs(1);
@@ -133,6 +133,26 @@ fn print_line(s: &Sample, cores: bool) {
         );
         if let Some(t) = b.time_left_s {
             line += &format!(" {}h{:02}", t / 3600, t / 60 % 60);
+        }
+    }
+    for g in &s.gpus {
+        line += &format!(" | {}", g.spec.card);
+        if g.state == GpuState::Suspended {
+            line += " em repouso";
+            continue;
+        }
+        line += &format!(" {}", pct(g.busy_pct));
+        if let Some(f) = g.freq_mhz {
+            line += &format!(" {f} MHz");
+        }
+        if let (Some(used), Some(total)) = (g.vram_used, g.spec.vram_total) {
+            line += &format!(" vram {}/{}", gb(used), gb(total));
+        }
+        if let Some(t) = g.temp {
+            line += &format!(" {:.0} °C", t.celsius);
+        }
+        if let Some(w) = g.power_w {
+            line += &format!(" {w:.1} W");
         }
     }
     println!("{line}");

@@ -417,6 +417,43 @@ export interface BatteryTotal {
   time_left_s: number | null;
 }
 
+export type GpuVendor = "amd" | "nvidia" | "intel" | "other";
+
+/** `suspended`: desligada pelo kernel para economizar; não é lida, para não acordar. */
+export type GpuState = "active" | "suspended";
+
+/** Por que faltam números: Intel (uso só com root), NVIDIA sem `nvidia-smi`, driver que não expõe. */
+export type GpuNote = "needs_root" | "no_nvidia_smi" | "not_exposed";
+
+/** O que não muda numa placa. */
+export interface GpuSpec {
+  /** `card0`, `card1`…: identifica a placa entre as amostras. */
+  card: string;
+  /** Nome comercial pelo `pci.ids`; `null` sem o arquivo ou fora do PCI. */
+  model: string | null;
+  vendor: GpuVendor;
+  driver: string | null;
+  /** `vendor:device` em hexadecimal; `null` fora do PCI. */
+  pci_id: string | null;
+  /** `null` quando não dá para saber (GPU virtual). */
+  integrated: boolean | null;
+  vram_total: number | null;
+}
+
+export interface GpuSample extends GpuSpec {
+  state: GpuState;
+  busy_pct: number | null;
+  vram_used: number | null;
+  /** Integradas AMD: memória do sistema usada pela GPU. */
+  gtt_used: number | null;
+  gtt_total: number | null;
+  temp: Temp | null;
+  power_w: number | null;
+  freq_mhz: number | null;
+  freq_max_mhz: number | null;
+  note: GpuNote | null;
+}
+
 export interface Sample {
   /** ms desde o início da sessão (relógio monotônico). */
   at_ms: number;
@@ -429,6 +466,8 @@ export interface Sample {
   /** Vazio no desktop. */
   batteries: BatterySample[];
   battery_total: BatteryTotal | null;
+  /** Uma por placa; vazio sem GPU. */
+  gpus: GpuSample[];
 }
 
 export interface DiskSpec {
@@ -449,6 +488,7 @@ export interface SystemInfo {
   distro: string | null;
   hostname: string | null;
   disks: DiskSpec[];
+  gpus: GpuSpec[];
 }
 
 /** Ordem: `sample`* → `stopped` | `error`. */

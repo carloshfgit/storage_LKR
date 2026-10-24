@@ -202,12 +202,14 @@ Tudo que depende de `/sys/class/hwmon`, `/sys/class/power_supply` e varia de má
 
 ## Etapa 18 — GPU
 Uma abstração por fabricante, cada uma com fallback para "não exposto" (D49).
-- [ ] `gpu/mod.rs`: descobre as placas por `/sys/class/drm/card[0-9]*` (sem os conectores `card0-HDMI-A-1`), fabricante por `device/vendor` (`0x1002` AMD, `0x10de` NVIDIA, `0x8086` Intel) e driver por `device/driver`. Nome pelo `lspci -mm -s <slot>` uma vez; sem `pciutils` (ou em ARM, sem PCI), o nome do driver com o fabricante ("GPU AMD (amdgpu)"), e `vendor:device` em hexadecimal na ficha técnica. Sem nenhuma placa em `/sys/class/drm` (VM sem GPU virtual, servidor), o card some.
-- [ ] `gpu/amd.rs` (`amdgpu`): `gpu_busy_percent`, `mem_info_vram_used/total` (e `mem_info_gtt_*` para integradas), hwmon do `device/` para `temp1_input`, `power1_average` ou `power1_input` e `freq1_input`. Placa em D3cold (`power/runtime_status = suspended`, comum em notebook com GPU dedicada parada): mostra "em repouso" **sem** ler os outros arquivos, que a acordariam.
-- [ ] `gpu/nvidia.rs` (driver proprietário): um `nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,clocks.gr --format=csv,noheader,nounits -lms 1000` de vida longa enquanto o monitor roda (iniciar um processo por segundo custa caro), lido numa thread (como o `run_with_timeout` do Docker). Sem `nvidia-smi`: "métricas não expostas pelo driver". `nouveau`: só temperatura pelo hwmon. O processo morre junto com o `stop_monitor` (`Drop` com `kill` + `wait`).
-- [ ] `gpu/intel.rs` (`i915`/`xe`): frequência atual (`gt_act_freq_mhz` / `gt_cur_freq_mhz`) e máxima. Uso e memória exigem `perf` com root: "uso não exposto sem root", sem tentar.
-- [ ] Card **GPU**: um por placa (abas pequenas quando houver mais de uma, como integrada + dedicada), com o que ela tiver; some só se não houver nenhuma placa.
-- [ ] Testes: árvores falsas para `amdgpu` dedicada (ativa e suspensa) e integrada (APU, só GTT), `i915`, `xe`, `nouveau`, NVIDIA proprietária com e sem `nvidia-smi`, híbrida (integrada + dedicada), sem placa, conectores ignorados, sem `lspci`; parser da linha CSV do `nvidia-smi` (incluindo `[N/A]`, `[Not Supported]` e mais de uma GPU).
+- [x] `gpu/mod.rs`: descobre as placas por `/sys/class/drm/card[0-9]*` (sem os conectores `card0-HDMI-A-1` nem os nós `renderD*`). Fabricante, driver e slot vêm do `device/uevent` (`PCI_ID`, `DRIVER`, `PCI_SLOT_NAME`), que tem o mesmo que `device/vendor` e `device/driver` num arquivo só. Ficam de fora os framebuffers do firmware (`simple-framebuffer`, `efidrm`…) e os monitores USB (`evdi`, `udl`, `gud`). **Mudança:** o nome vem do `pci.ids` lido direto, não do `lspci -mm -s <slot>`: o `lspci` lê o espaço de configuração PCI, e isso acordou a Radeon em D3cold desta máquina (`runtime_status` de `suspended` para `active`). Sem o arquivo (ou em ARM, sem PCI), a UI mostra o driver com o fabricante ("GPU AMD (amdgpu)"), e a ficha técnica, o `vendor:device` em hexadecimal. Sem nenhuma placa (VM sem GPU virtual, servidor), o card some.
+- [x] `gpu/amd.rs` (`amdgpu`): `gpu_busy_percent`, `mem_info_vram_used` (o total é lido na descoberta, sem acordar) e `mem_info_gtt_*` só nas integradas (APU, reconhecida pela tensão `vddnb` do hwmon, que o `amdgpu` só cria nelas); hwmon do `device/` para `temp1_input` (`edge`), `power1_average` ou `power1_input` e `freq1_input`. Placa em D3cold (`power/runtime_status = suspended`): mostra "em repouso" **sem** ler os outros arquivos, que a acordariam (5.15) ou falham com EBUSY (kernels novos).
+- [x] **Pausa para a dedicada dormir** (fora do plano original, D49): cada leitura renova o atraso de autosuspend da placa (5 s), e lendo a 1 Hz a Radeon nunca dormia. Depois de 3 leituras sem uso, a coleta da placa para por `autosuspend + 3 s`; se ela dormiu, fica "em repouso"; se continua ativa (monitor ligado nela), a pausa se desliga até ela dormir.
+- [x] Consumo acima do limite da placa (`power1_cap_max`/`power1_cap` × 1,25; sem limite, 1.000 W) é descartado: a Radeon R7 M445 desta máquina, com limite de 30 W, informa 572 W e 1.088 W parada.
+- [x] `gpu/nvidia.rs` (driver proprietário): um `nvidia-smi --query-gpu=pci.bus_id,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,clocks.gr,clocks.max.gr --format=csv,noheader,nounits -lms 1000` de vida longa, lido numa thread; o `pci.bus_id` liga cada linha à placa. Só roda enquanto alguma NVIDIA está ativa e fora da pausa (com ela suspensa, não sobe). Sem `nvidia-smi` em `/usr/bin` ou `/usr/local/bin`: "não exposto", com a dica do pacote `nvidia-utils`; se ele sair sozinho, não sobe de novo na sessão. `nouveau`: só temperatura pelo hwmon. O processo morre no `Drop` (`kill` + `wait`), junto com o `Sampler`, quando a thread do monitor sai.
+- [x] `gpu/intel.rs` (`i915`/`xe`): frequência atual (`gt_act_freq_mhz`, senão `gt_cur_freq_mhz`; no `xe`, `tile0/gt0/freq0/act_freq`) e máxima (`gt_max_freq_mhz`, senão `gt_RP0_freq_mhz`). Uso e consumo exigem `perf` com root: "exige root", sem tentar.
+- [x] Card **GPU** (`GpuCard.svelte`): um por vez, com abas pequenas no título quando há mais de uma ("Intel · integrada", "AMD · dedicada"; começa na primeira acordada). Gráfico de uso (na Intel, da frequência em % da máxima), memória de vídeo (ou "usa a RAM"), memória compartilhada (GTT) nas APUs, frequência, temperatura e consumo; no lugar do que falta, o motivo. Some só sem nenhuma placa. A ficha técnica ganhou uma linha por GPU.
+- [x] Testes: árvores falsas para `amdgpu` dedicada (ativa e suspensa) e integrada (APU, com GTT), pausa (dorme, acorda de novo, continua acordada, ocupada nunca pausa), consumo inválido, `i915` (atual e antigo, sem `act`), `xe`, `nouveau`, NVIDIA proprietária com e sem `nvidia-smi` (executável falso), NVIDIA suspensa (o `nvidia-smi` não sobe), NVIDIA ociosa (o `nvidia-smi` sai na pausa), híbrida (Intel + AMD e Intel + NVIDIA), sem placa, só framebuffer, ARM sem PCI, GPU virtual, sem `pci.ids`; parser do `pci.ids` (subsistema com nome do notebook ignorado) e da linha CSV do `nvidia-smi` (`[N/A]`, `[Not Supported]`, mais de uma GPU); o `Drop` mata o processo; e, no sistema real, que a amostra não acorda uma placa suspensa.
 
 **Pronto quando:**
 - Toda placa presente aparece com o que o driver dela expõe, e o que falta mostra o motivo ("não exposto pelo driver", "exige root", "em repouso") em vez de zero.
@@ -215,9 +217,27 @@ Uma abstração por fabricante, cada uma com fallback para "não exposto" (D49).
 - Na máquina de teste, os valores batem com a ferramenta do fabricante (`radeontop`/`sensors` na AMD, `nvidia-smi` na NVIDIA, `intel_gpu_top` só para a frequência na Intel).
 - Com NVIDIA, não sobra processo `nvidia-smi` depois de sair da aba (conferir quando houver uma máquina com NVIDIA; até lá, coberto pelo teste do `Drop` com um executável falso).
 
-**Resultado:** _a preencher._
+**Resultado (23/10/2026, Dell com Intel HD Graphics 620 + AMD Radeon R7 M445, kernel 7.0):**
 
----
+| Medida | `monitor` | Referência |
+|---|---|---|
+| Placas encontradas | `card0` AMD Radeon R7 M445 (dedicada, 4,29 GB), `card1` Intel HD Graphics 620 (integrada) | `lspci -mm`: "Radeon R7 M445" (subsistema Dell) e "HD Graphics 620" |
+| Radeon suspensa, 3 amostras com a aba aberta | "em repouso"; `runtime_active_time` +0 ms | antes e depois: `suspended` |
+| `lspci -mm -s 01:00.0`, para comparar | — | acorda a placa (`suspended` → `active`): por isso o `pci.ids` |
+| Radeon acordada, sem uso | 0%, 300 MHz, VRAM 1,39 MB de 4,29 GB, 44–48 °C | `gpu_busy_percent` 0, `freq1_input` 300 MHz, `mem_info_vram_used` 1.392.640, `temp1_input` 44000–48000 |
+| Radeon acordada, depois da pausa | 8 leituras, depois "em repouso" (dormiu ~10 s depois de acordar) | sem a pausa, lendo a 1 Hz: ficou `active` os 12 s, e só dormiu ~6 s depois da última leitura |
+| Consumo da Radeon | "—" (descartado) | `power1_input`: 1.088 W, 572 W e 29,8 W parada, com `power1_cap` de 30 W |
+| Intel, frequência | 300–350 MHz de 1.050 MHz | `gt_act_freq_mhz` 300–350, `gt_max_freq_mhz` 1050 |
+| Custo da GPU | descoberta 5,6 ms (uma vez por sessão, quase toda no `pci.ids` de 1,5 MB); 44 µs por amostra | — |
+
+- 27 testes novos no crate (80 no total; 183 no workspace), clippy limpo, `npm run check` sem erros. Repetidos 15 vezes: sem falha e sem processo `nvidia-smi` falso sobrando. (O "71 no total" da Etapa 17 estava errado: eram 53 no crate; os 156 do workspace estavam certos.)
+- As ferramentas do fabricante (`radeontop`, `sensors`, `intel_gpu_top`) não estão instaladas nesta máquina; a conferência foi contra os mesmos arquivos do sysfs que elas leem.
+- ⚠️ **Achado fora desta etapa:** a amostra completa passou de ~1 ms para 20–30 ms, e não por causa da GPU. Pelo `strace`, o tempo está no `drivetemp` (agora carregado: ~8 ms por leitura, um comando SMART ao SSD) e no `BAT0/present` (6–17 ms, que vai ao EC pela ACPI) — leituras da Etapa 17. Quase tudo é espera no kernel, não CPU (o processo ficou em 0,5–1,3% de um núcleo, com o `strace`), mas o tick fica mais longo. Fica para a Etapa 20 (D51): ler a bateria e o `drivetemp` com menos frequência (a cada 5–10 s) e medir de novo.
+- ⏳ **Falta conferir**, o que precisa ser feito por você:
+  1. Abrir a aba Recursos com a Radeon suspensa (`cat /sys/bus/pci/devices/0000:01:00.0/power/runtime_status`): continua `suspended`, e o card mostra "em repouso" nela e a frequência na Intel. As abas do card trocam de placa.
+  2. Rodar algo na Radeon (`DRI_PRIME=1 glxgears`, do pacote `mesa-utils`): o card mostra uso, temperatura e frequência subindo; ao fechar, em ~10 s ela volta a "em repouso".
+  3. A linha "GPU" da ficha técnica, nos temas claro e escuro.
+  4. NVIDIA, AMD integrada e `xe`: só por testes até haver uma máquina com elas.
 
 ## Etapa 19 — "Top 5" processos
 - [ ] `procs.rs`: a cada 2 ticks, lê `/proc/[pid]/stat` (utime + stime, RSS), `/proc/[pid]/comm` e `/proc/[pid]/io` (`read_bytes`/`write_bytes`). CPU% = Δ(utime + stime) / Δtempo / `CLK_TCK`, relativo a um núcleo (como o `top`), com a opção de mostrar relativo ao total. Memória pelo RSS (`statm` × tamanho de página). Processos que somem entre leituras são ignorados sem erro.
@@ -257,7 +277,7 @@ Uma abstração por fabricante, cada uma com fallback para "não exposto" (D49).
 | D46 | Coleta só com a aba visível: `start`/`stop` pela UI (aba, `visibilitychange`, minimizar), e parada no backend se o `Channel` falhar | Coleta contínua com o histórico no Rust: gasta CPU e bateria com a janela fechada, que é o que a ideia proíbe. Pausar ao perder o foco: quebraria o caso de olhar o monitor durante uma tarefa em outra janela |
 | D47 | Histórico de 60 amostras só no frontend; voltar à aba recomeça o gráfico | Anel no backend sempre ativo (contraria D46). Guardar no cache em disco: sem uso para dados de 1 min |
 | D48 | Gráficos em SVG nativo com Svelte, sem biblioteca | `uPlot` (Canvas, ~45 kB): mais rápido com milhares de pontos, mas aqui são ≤ 8 séries × 60 pontos, e o SVG herda os tokens do tema e a acessibilidade de graça |
-| D49 | GPU por fabricante com fallback explícito; `nvidia-smi` de vida longa; nunca acordar GPU suspensa | NVML via `nvml-wrapper`: carrega `libnvidia-ml.so` em tempo de execução, mais rápido, mas adiciona dependência e falha de forma menos previsível sem o driver (avaliar se o custo do `nvidia-smi` passar da meta). `intel_gpu_top`: exige root |
+| D49 | GPU por fabricante com fallback explícito; `nvidia-smi` de vida longa; nunca acordar GPU suspensa (nome pelo `pci.ids`, pausa para a dedicada ociosa dormir) | NVML via `nvml-wrapper`: carrega `libnvidia-ml.so` em tempo de execução, mais rápido, mas adiciona dependência e falha de forma menos previsível sem o driver (avaliar se o custo do `nvidia-smi` passar da meta). `intel_gpu_top`: exige root |
 | D50 | "Top 5" agrupado por aplicativo, só leitura | Lista por PID: o Chrome ocuparia as 5 linhas. Botão "encerrar": ação destrutiva fora do propósito do app |
 | D51 | Metas de custo: < 0,5% de um núcleo no coletor, < 2% no app inteiro com a aba aberta, 0 com a aba fechada | — |
 | D52 | Mínimo Ubuntu 22.04 (kernel 5.15), `amd64`; nenhum critério preso a um hardware; ferramentas externas opcionais | Suportar 20.04 (kernel 5.4): sem hwmon de NVMe nem `gpu_busy_percent` em parte das placas, e a 20.04 já saiu do suporte padrão. Exigir `lspci`/`nvidia-smi`: quebraria em instalações mínimas |
@@ -272,7 +292,7 @@ Cada formato tem um teste com árvore falsa de `proc/`/`sys/` (montada a partir 
 | Memória | Com swap em arquivo/partição, sem swap, zRAM, kernel sem PSI | _a preencher_ |
 | Disco | SATA (com/sem `drivetemp`), NVMe, eMMC/SD, USB, virtio, `md` e `dm` ignorados | SATA sem `drivetemp` |
 | Rede | Cabo, Wi-Fi, os dois juntos, interfaces virtuais e VPN ignoradas, contador reiniciado | _a preencher_ |
-| GPU | AMD dedicada/integrada/suspensa, NVIDIA com/sem `nvidia-smi`, `nouveau`, Intel `i915`/`xe`, híbrida, sem GPU, sem `lspci` | _a preencher_ |
+| GPU | AMD dedicada/integrada/suspensa, NVIDIA com/sem `nvidia-smi` e suspensa, `nouveau`, Intel `i915`/`xe`, híbrida, sem GPU, só framebuffer, ARM, virtual, sem `pci.ids` | Intel `i915` (HD 620) + AMD `amdgpu` dedicada (R7 M445, suspensa e ativa) |
 | Bateria | `energy_*`, `charge_*`, duas baterias, sem `full_design`, periférico Bluetooth, desktop sem bateria | `charge_*` (Dell), cheia na tomada |
 | Sessão | X11 e Wayland (pausa ao minimizar), 1366×768, HiDPI 200% | _a preencher_ |
 

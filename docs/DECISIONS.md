@@ -55,6 +55,7 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D46](#d46) | Monitor só com a aba Recursos visível; perder o foco não pausa | ✅ | 16 |
 | [D47](#d47) | Histórico de 60 amostras só no frontend | ✅ | 16 |
 | [D48](#d48) | Gráficos em SVG puro, sem biblioteca | ✅ | 16 |
+| [D49](#d49) | GPU por fabricante; nunca acordar a dedicada suspensa | ✅ | 18 |
 | [D53](#d53) | Sensores e bateria: escolha do sensor, limiar e as contas do UPower | ✅ | 17 |
 
 ---
@@ -675,8 +676,43 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 - `uPlot` (Canvas, ~45 kB): mais rápido com milhares de pontos, mas aqui não há milhares. As cores teriam de ser lidas do CSS em JS e redesenhadas na troca de tema.
 - Canvas próprio: nitidez em HiDPI (`devicePixelRatio`) e acessibilidade ficariam por nossa conta.
 
+### D49 — GPU por fabricante; nunca acordar a dedicada suspensa <a id="d49"></a>
+**Decisão:**
+- Uma placa por `/sys/class/drm/card*`, com fabricante, driver e slot do `device/uevent`. Cada driver tem a sua leitura: `amdgpu` pelo sysfs e pelo hwmon, NVIDIA proprietária pelo `nvidia-smi`, `i915`/`xe` só a frequência, e o resto (`nouveau`, `radeon`, GPUs virtuais e de ARM) só o hwmon, se houver. O que falta vem com o motivo (`GpuNote`: exige root, sem `nvidia-smi`, não exposto pelo driver), nunca como zero.
+- **Placa suspensa não é lida.** A cada amostra, só o `power/runtime_status`; com `suspended`, o card diz "em repouso". A descoberta lê só o que não acorda.
+- **Nome pelo `pci.ids`, lido direto**, sem o `lspci`. O nome comercial é o que está entre colchetes ("Kaby Lake-U GT2 [HD Graphics 620]" → "Intel HD Graphics 620"); o do subsistema ("Radeon R7 M445") só vale quando começa com a mesma palavra.
+- **Pausa para a dedicada ociosa dormir:** depois de 3 leituras seguidas sem uso, a coleta daquela placa para por `autosuspend_delay_ms + 3 s`, com a última leitura na tela. Se ela dormiu, "em repouso"; se continua ativa, outra coisa a usa, e a pausa se desliga até ela dormir. Vale para as dedicadas com runtime PM (`power/control = auto`), e na NVIDIA fecha o `nvidia-smi`.
+- **`nvidia-smi` de vida longa** (`-lms 1000`), lido numa thread, que só roda enquanto há uma NVIDIA ativa e fora da pausa, e morre no `Drop` com o `Sampler`.
+- Consumo acima do limite da placa (`power1_cap_max`/`power1_cap` × 1,25, lido só com ela ativa; sem limite, 1.000 W) é descartado.
+
+**Por quê:**
+- Num notebook híbrido, a dedicada passa quase todo o tempo em D3cold. Acordá-la para mostrar "0%" gasta bateria e esquenta, que é o contrário do que a aba quer mostrar.
+- Medido nesta máquina (Radeon R7 M445 em D3cold, kernel 7.0):
+  - O `lspci -mm -s 01:00.0` acorda a placa: ele lê o espaço de configuração PCI, e o kernel liga um dispositivo em D3cold para isso. `uevent`, `vendor`, `device`, `subsystem_*`, os nomes e rótulos do hwmon, `temp1_crit`, `mem_info_vram_total` e `power/*` não acordam (`runtime_active_time` sem mudar).
+  - Com a placa suspensa, `gpu_busy_percent`, `temp1_input`, `power1_input` e `freq1_input` falham com EBUSY. No 5.15 (Ubuntu 22.04), as mesmas leituras chamam `pm_runtime_get_sync` e a ligam.
+  - Lendo `gpu_busy_percent` a 1 Hz, a placa ficou ativa os 12 s do teste e só dormiu ~6 s depois da última leitura: cada leitura renova o atraso de autosuspend (5 s). Com a pausa, ela dormiu ~10 s depois de acordar, com a aba aberta.
+  - O `power1_input` desta Radeon dá 572 W e 1.088 W parada, com `power1_cap` de 30 W.
+- O `uevent` tem `DRIVER`, `PCI_ID`, `PCI_SUBSYS_ID` e `PCI_SLOT_NAME` num arquivo só, e as árvores falsas dos testes ficam com um arquivo por placa.
+- O subsistema às vezes é o nome do notebook ("ThinkPad T570" na HD 620), e às vezes o da placa ("Radeon R7 M445" na Topaz da Dell, mais preciso que "Radeon R7 M260/M265 / … / 620/625 Mobile"). A primeira palavra separa os dois casos.
+- APU: o `amdgpu` só cria a tensão `vddnb` (`in1_*` do hwmon) nas APUs, e a presença do arquivo não acorda nada. O tamanho da VRAM não serve: a reserva de uma APU vai de 512 MB a 4 GB, e há dedicadas de 2 GB.
+- Subir um `nvidia-smi` por segundo, que abre o driver a cada execução, custa muito mais do que ler uma linha de um pipe. O de vida longa só é criado com a placa ativa, porque consultá-lo acorda uma NVIDIA em RTD3.
+
+**Descartado:**
+- `lspci` para o nome: acorda a placa (medido). Também é uma ferramenta externa que nem toda instalação mínima tem (D52); o `pci.ids` também pode faltar, e então a UI mostra o driver e o `vendor:device`.
+- Ler sempre a 1 Hz com a placa ativa: impede a dedicada de dormir enquanto a aba está aberta.
+- Pausar com o tempo fixo de 5 s: o `autosuspend_delay_ms` muda por driver e pode ser configurado.
+- NVML via `nvml-wrapper`: carrega a `libnvidia-ml.so` em tempo de execução, mais rápido, mas adiciona dependência e falha de forma menos previsível sem o driver. Fica para avaliar se o custo do `nvidia-smi` passar da meta.
+- `intel_gpu_top` ou o PMU pelo `perf` para o uso da Intel: exigem root (D19).
+- Desligar a pausa nas integradas: elas não têm um estado de repouso separado da máquina, e as leituras do `i915` não seguram a placa acordada.
+
+**Limitações:**
+- Num desktop em que a dedicada liga o monitor e fica ociosa, a primeira pausa abre um buraco de ~8 s no gráfico até ela ser desligada.
+- A NVIDIA ativa fica acordada enquanto o `nvidia-smi` roda e ela tem uso; ociosa, a pausa o fecha. Sem uma máquina com NVIDIA, isso foi conferido só com um `nvidia-smi` falso.
+- O filtro de consumo descarta os valores absurdos, mas um valor errado abaixo do limite (29,8 W com a placa parada, nesta Radeon) passa.
+- Intel: só a frequência. O `act_freq` pode dar 0 com a GPU em RC6.
+
 ### D53 — Sensores e bateria: escolha do sensor, limiar e as contas do UPower <a id="d53"></a>
-(D49 a D52 estão reservadas no PLAN-V2 para a GPU, o "Top 5", as metas de custo e a compatibilidade.)
+(D50 a D52 estão reservadas no PLAN-V2 para o "Top 5", as metas de custo e a compatibilidade.)
 
 **Decisão:**
 - **CPU:** um sensor só, escolhido uma vez por uma ordem fixa: o do próprio chip (`coretemp`, `k10temp`/`zenpower` com `Tdie` antes de `Tctl`, `cpu_thermal`), depois a zona `x86_pkg_temp` e, por último, o `acpitz` da placa, mostrado com `~`.

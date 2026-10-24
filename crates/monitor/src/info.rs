@@ -7,7 +7,8 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::disk_io::{self, SECTOR};
-use crate::model::DiskKind;
+use crate::gpu;
+use crate::model::{DiskKind, GpuSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SystemInfo {
@@ -22,6 +23,8 @@ pub struct SystemInfo {
     pub hostname: Option<String>,
     /// Discos físicos, na ordem do nome.
     pub disks: Vec<DiskSpec>,
+    /// Placas de vídeo, na ordem do `card`.
+    pub gpus: Vec<GpuSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -67,6 +70,7 @@ pub fn system_info(root: &Path) -> SystemInfo {
             .and_then(|t| parse_os_release(&t)),
         hostname: read("proc/sys/kernel/hostname").and_then(clean),
         disks: disks(root),
+        gpus: gpu::cards(root).into_iter().map(|c| c.spec).collect(),
     }
 }
 
