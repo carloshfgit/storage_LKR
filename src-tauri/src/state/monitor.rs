@@ -160,6 +160,7 @@ mod tests {
             batteries: Vec::new(),
             battery_total: None,
             gpus: Vec::new(),
+            procs: None,
         }
     }
 

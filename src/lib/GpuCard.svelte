@@ -5,6 +5,7 @@
   import type { GpuSample, Sample } from "./api";
   import { formatBytes, formatMHz, formatPercent } from "./format";
   import MetricCard from "./MetricCard.svelte";
+  import MiniTabs from "./MiniTabs.svelte";
   import { GPU_VENDOR_LABELS, gpuKind, gpuName } from "./resources";
   import Sparkline from "./Sparkline.svelte";
   import TempValue from "./TempValue.svelte";
@@ -61,13 +62,12 @@
 <MetricCard title="GPU" {value} {subtitle}>
   {#snippet actions()}
     {#if gpus.length > 1}
-      <div class="tabs" role="group" aria-label="Placa de vídeo">
-        {#each gpus as g (g.card)}
-          <button aria-pressed={g.card === gpu.card} title={gpuName(g)} onclick={() => (chosen = g.card)}>
-            {tabLabel(g)}
-          </button>
-        {/each}
-      </div>
+      <MiniTabs
+        label="Placa de vídeo"
+        options={gpus.map((g) => ({ id: g.card, label: tabLabel(g), title: gpuName(g) }))}
+        value={gpu.card}
+        onchange={(card) => (chosen = card)}
+      />
     {/if}
   {/snippet}
 
@@ -143,44 +143,6 @@
 </MetricCard>
 
 <style>
-  .tabs {
-    display: flex;
-    gap: 2px;
-    padding: 2px;
-    border-radius: 7px;
-    background: var(--track);
-  }
-
-  .tabs button {
-    padding: 2px 8px;
-    border: none;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--text-secondary);
-    font: inherit;
-    font-size: 11px;
-    font-weight: 600;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .tabs button[aria-pressed="true"] {
-    background: var(--surface);
-    color: var(--text);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
-  }
-
-  .tabs button:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .tabs button[aria-pressed="true"] {
-      background: #636366;
-    }
-  }
-
   .meta {
     margin: 0;
     color: var(--text-secondary);

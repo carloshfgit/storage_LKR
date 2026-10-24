@@ -1,5 +1,5 @@
-<!-- Aba Recursos: CPU, memória, disco, rede, GPU e bateria em tempo real, e a ficha técnica (PLAN-V2,
-     Etapas 16 a 18).
+<!-- Aba Recursos: CPU, memória, disco, rede, GPU, processos e bateria em tempo real, e a ficha técnica
+     (PLAN-V2, Etapas 16 a 19).
      Só coleta com a aba ativa, a página visível e a janela não minimizada (DECISIONS D46). Perder o
      foco não pausa: o caso de uso é olhar o monitor enquanto outra janela faz o trabalho pesado.
      O histórico (60 amostras) fica só aqui e recomeça a cada sessão (D47). -->
@@ -21,6 +21,7 @@
   import MetricCard from "./MetricCard.svelte";
   import { diskKind } from "./resources";
   import Sparkline from "./Sparkline.svelte";
+  import TopProcesses from "./TopProcesses.svelte";
   import SystemInfoCard from "./SystemInfoCard.svelte";
   import TempValue from "./TempValue.svelte";
 
@@ -91,6 +92,11 @@
   });
 
   const last = $derived(samples.at(-1));
+  /** Os processos vêm a cada 2 amostras: a última lista que chegou. */
+  const procs = $derived.by(() => {
+    for (let i = samples.length - 1; i >= 0; i--) if (samples[i].procs) return samples[i].procs;
+    return null;
+  });
   const series = <T,>(pick: (s: Sample) => T) => samples.map(pick);
 
   const sumDisks = (s: Sample, key: "read_bps" | "write_bps") =>
@@ -278,6 +284,12 @@
       {#if last.gpus.length > 0}
         <GpuCard {samples} />
       {/if}
+
+      <TopProcesses
+        top={procs}
+        threads={last.cpu.cores.length || (info?.threads ?? 1)}
+        ramTotal={last.mem.total}
+      />
 
       {#if last.battery_total && last.batteries.length > 0}
         <BatteryCard batteries={last.batteries} total={last.battery_total} />

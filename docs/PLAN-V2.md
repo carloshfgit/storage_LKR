@@ -240,20 +240,37 @@ Uma abstração por fabricante, cada uma com fallback para "não exposto" (D49).
   4. NVIDIA, AMD integrada e `xe`: só por testes até haver uma máquina com elas.
 
 ## Etapa 19 — "Top 5" processos
-- [ ] `procs.rs`: a cada 2 ticks, lê `/proc/[pid]/stat` (utime + stime, RSS), `/proc/[pid]/comm` e `/proc/[pid]/io` (`read_bytes`/`write_bytes`). CPU% = Δ(utime + stime) / Δtempo / `CLK_TCK`, relativo a um núcleo (como o `top`), com a opção de mostrar relativo ao total. Memória pelo RSS (`statm` × tamanho de página). Processos que somem entre leituras são ignorados sem erro.
-- [ ] Agrupar por aplicativo (D50): threads já não aparecem (só `/proc/[pid]`); processos com o mesmo `comm` e mesmo pai que também tenha esse `comm` somam numa linha com "×N" (Chrome, Electron, `node`). Nome amigável pelo `.desktop` quando o `cmdline` aponta para um executável conhecido; senão o `comm`.
-- [ ] I/O de processo só funciona para os do próprio usuário (`/proc/[pid]/io` é `0400` do dono). Os de outros usuários entram em CPU e RAM, e o critério "Disco" diz "só seus processos".
-- [ ] Custo: o `Sampler` guarda o mapa `pid → tempos anteriores` e reaproveita os buffers. Meta: < 5 ms por leitura com ~400 processos.
-- [ ] UI `TopProcesses.svelte`: card com seletor CPU | Memória | Disco, 5 linhas (nome, ×N, valor, mini-barra), com `animate:flip` na reordenação (desligado em `prefers-reduced-motion`). Só leitura: sem "encerrar" (fora do escopo).
-- [ ] Testes: árvore falsa de `proc/` com processos que somem, `comm` com espaço e parênteses (o `stat` exige achar o último `)`), agrupamento por pai, `io` sem permissão.
+- [x] `procs.rs`: a cada 2 ticks (`PROCS_EVERY`), lê `/proc/[pid]/stat` e `/proc/[pid]/io` (`read_bytes`/`write_bytes`). **Mudança:** o `stat` já traz o `comm`, o pai e o RSS, então `comm` e `statm` não são lidos (dois arquivos a menos por processo). CPU% = Δ(utime + stime) / `CLK_TCK` / Δtempo, relativo a um núcleo (como o `top`); a UI também mostra relativo ao processador inteiro. Memória pelo RSS (× tamanho de página). Processos que somem entre leituras são ignorados; o pid vem junto com o início, porque o kernel o reaproveita. Threads do kernel (`PF_KTHREAD`) e zumbis ficam de fora.
+- [x] Agrupar por aplicativo (D50): threads já não aparecem (só `/proc/[pid]`); um processo entra no grupo do pai quando o pai tem o mesmo `comm`, até a raiz ("×N": Chrome, Electron, `node`). Nome pelo `.desktop` (`apps.rs`) quando o `argv[0]` da raiz é o executável do `Exec`, tem o mesmo nome ou está na pasta própria do app (o Chrome roda em `/opt/google/chrome/`, onde fica o script do `Exec`); grupos do mesmo `.desktop` se juntam. Entradas `NoDisplay` ficam de fora (o `claude` aparecia como "Claude Code URL Handler"). Sem `.desktop`, o nome do executável quando o `comm` (15 caracteres) é o começo dele, senão o `comm`.
+- [x] I/O de processo só funciona para os do próprio usuário (`/proc/[pid]/io` é `0400` do dono). Os de outros usuários entram em CPU e RAM, e o critério "Disco" diz "só seus processos".
+- [x] Custo: o `Procs` guarda `pid → tempos anteriores`, reaproveita o buffer e o caminho, lê cada arquivo com um `read` só, não tenta de novo o `io` que falhou e não relê o `io` de processo que não usou CPU (não fez I/O).
+- [x] UI `TopProcesses.svelte`: card com seletor CPU | Memória | Disco (`MiniTabs.svelte`, que o card GPU passou a usar também), 5 linhas (nome, ×N, valor, mini-barra), com `animate:flip` na reordenação (desligado em `prefers-reduced-motion`). Critério e escala da CPU lembrados no `localStorage`. Só leitura: sem "encerrar" (fora do escopo).
+- [x] CLI: `monitor --procs` imprime as três listas e, no fim, o custo da leitura de processos (média das amostras com processos menos a das sem).
+- [x] Testes: árvore falsa de `proc/` com processos que somem, pid novo e pid reaproveitado, `comm` com espaço e parênteses (o `stat` exige achar o último `)`), agrupamento por pai (e `chrome` filho de outro programa fora do grupo), junção pelo `.desktop`, `comm` cortado em 15, `io` sem permissão, `io` de processo parado não relido, threads do kernel e zumbis, listas com no máximo 5; `.desktop` com aspas, `env`, snap, ações, `NoDisplay`, modos (`libreoffice --calc`) e pastas genéricas; leitura a cada 2 amostras.
 
 **Pronto quando:**
 - Rodando `stress --cpu 1` (ou `yes > /dev/null`), ele aparece no topo de CPU com ~100% em até 4 s; `dd if=/dev/zero of=~/x bs=1M count=2000` aparece no topo de Disco.
 - O custo da leitura de processos fica dentro da meta, medido com o CLI (`monitor --procs`).
 
-**Resultado:** _a preencher._
+**Resultado (23/10/2026, 183 processos fora as threads do kernel, i7-7500U):**
 
----
+| Medida | `monitor --procs` | Referência |
+|---|---|---|
+| `yes > /dev/null` | 2º lugar em CPU 1,7 s depois de começar (76%, intervalo parcial); 97,6% e 99,6% nas leituras seguintes | `ps`: 97,3% |
+| `dd … bs=1M count=2000` (no SSD) | 1º em Disco, ↑ 904 MB/s e depois 74 MB/s | `sda` no mesmo `monitor`: 472 MB/s (o `dd` conta ao sujar o cache de páginas) |
+| Agrupamento | Google Chrome ×22, Antigravity IDE ×15, `gnome-shell`, `claude` | `ps`: 18 `chrome` + 2 `chrome_crashpad_handler`… (o `/opt/google/chrome` liga os dois ao `.desktop`) |
+| Custo, laço quente | 3,8 ms por leitura | meta < 5 ms com ~400 processos |
+| Custo a cada 2 s (CPU da thread) | de 3,4 a 14,8 ms por leitura, quase tudo no `stat`; o `io` relido em ~20 dos 183 | — |
+| Coletor inteiro a 1 Hz | **1,67%** de um núcleo (60 s; +10,2 ms por leitura de processos) | sem a leitura de processos: **1,30%** (30 s); na Etapa 15, sem processos, bateria e `drivetemp`: 0,10% |
+
+- 17 testes novos no crate (97 no total; 200 no workspace), clippy limpo, `npm run check` sem erros.
+- ⚠️ **Meta de custo só no laço quente.** Com 183 processos, a leitura cabe nos 5 ms quando a CPU está acordada; a 1 Hz, a CPU desta máquina volta a 800 MHz entre as amostras, e o mesmo trabalho custa de 3 a 15 ms de CPU. O piso é o `stat` de cada processo (o kernel soma os tempos de todas as threads); com ~400 processos, seria o dobro. Pular o `io` dos processos parados e fazer um `read` só por arquivo tiraram o resto. Opções para a Etapa 20 (D51): ler os processos a cada 3–5 s, ou só quando o card estiver na tela.
+- ⚠️ **O coletor inteiro está em 1,7% de um núcleo, e o grosso não é dos processos.** Sem eles, fica em 1,30%, contra 0,10% na Etapa 15: é o custo que a Etapa 17 trouxe (o achado da Etapa 18). Cada amostra lê vários arquivos da bateria, que no Dell passam pelo EC/ACPI (o `BAT0/present` leva 6–17 ms), e o `drivetemp`, agora carregado, manda um comando SMART ao SSD (~8 ms). Os processos somam ~0,4–0,7 p.p. A meta de 0,5% do coletor (D51) fica para a Etapa 20, que deve começar por ler a bateria e o `drivetemp` a cada 5–10 s e decidir a cadência dos processos.
+- O `dd` aparece com mais que a velocidade do disco porque o `write_bytes` conta ao sujar o cache de páginas; a gravação de fato, feita depois pelas threads do kernel, não aparece em nenhum processo (D50).
+- ⏳ **Falta conferir**, o que precisa ser feito por você:
+  1. Card Processos na aba Recursos: trocar CPU | Memória | Disco, ver as linhas animarem ao reordenar e "Ver do processador" mudar os valores.
+  2. Com "Reduzir animação" ligado no GNOME (Acessibilidade), a reordenação não anima.
+  3. Temas claro e escuro, e a janela no mínimo (560 px).
 
 ## Etapa 20 — Polimento e pacote 1.1.0
 - [ ] Acessibilidade: cada gráfico com `role="img"` e `aria-label` resumindo o valor atual e o mínimo/máximo do minuto; valores com `aria-live="polite"` limitado (só o card focado), para o leitor de tela não ler tudo a cada segundo.
@@ -278,7 +295,7 @@ Uma abstração por fabricante, cada uma com fallback para "não exposto" (D49).
 | D47 | Histórico de 60 amostras só no frontend; voltar à aba recomeça o gráfico | Anel no backend sempre ativo (contraria D46). Guardar no cache em disco: sem uso para dados de 1 min |
 | D48 | Gráficos em SVG nativo com Svelte, sem biblioteca | `uPlot` (Canvas, ~45 kB): mais rápido com milhares de pontos, mas aqui são ≤ 8 séries × 60 pontos, e o SVG herda os tokens do tema e a acessibilidade de graça |
 | D49 | GPU por fabricante com fallback explícito; `nvidia-smi` de vida longa; nunca acordar GPU suspensa (nome pelo `pci.ids`, pausa para a dedicada ociosa dormir) | NVML via `nvml-wrapper`: carrega `libnvidia-ml.so` em tempo de execução, mais rápido, mas adiciona dependência e falha de forma menos previsível sem o driver (avaliar se o custo do `nvidia-smi` passar da meta). `intel_gpu_top`: exige root |
-| D50 | "Top 5" agrupado por aplicativo, só leitura | Lista por PID: o Chrome ocuparia as 5 linhas. Botão "encerrar": ação destrutiva fora do propósito do app |
+| D50 | "Top 5" agrupado por aplicativo (mesmo `comm` do pai, depois o `.desktop`), só leitura | Lista por PID: o Chrome ocuparia as 5 linhas. Botão "encerrar": ação destrutiva fora do propósito do app |
 | D51 | Metas de custo: < 0,5% de um núcleo no coletor, < 2% no app inteiro com a aba aberta, 0 com a aba fechada | — |
 | D52 | Mínimo Ubuntu 22.04 (kernel 5.15), `amd64`; nenhum critério preso a um hardware; ferramentas externas opcionais | Suportar 20.04 (kernel 5.4): sem hwmon de NVMe nem `gpu_busy_percent` em parte das placas, e a 20.04 já saiu do suporte padrão. Exigir `lspci`/`nvidia-smi`: quebraria em instalações mínimas |
 

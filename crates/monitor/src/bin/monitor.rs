@@ -1,18 +1,22 @@
 //! CLI de validação do monitor: imprime uma amostra por intervalo, para
 //! comparar com `top`, `free -b`, `iostat -d 1`, `ifstat` e as ferramentas da GPU.
 //!
-//! Uso: `monitor [--once] [--interval MS] [--count N] [--json] [--cores]`
+//! Uso: `monitor [--once] [--interval MS] [--count N] [--json] [--cores] [--procs]`
+//!
+//! Com `--procs`, imprime os "Top 5" a cada leitura de processos, e no fim o
+//! custo dela (média das amostras com processos menos a das sem).
 
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use monitor::{GpuState, Sample, Sampler};
+use monitor::{GpuState, ProcGroup, Sample, Sampler};
 
 fn main() -> ExitCode {
     let mut interval = Duration::from_secs(1);
     let mut count: Option<u64> = None;
     let mut json = false;
     let mut cores = false;
+    let mut procs = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -27,8 +31,11 @@ fn main() -> ExitCode {
             "--count" => count = args.next().and_then(|v| v.parse().ok()),
             "--json" => json = true,
             "--cores" => cores = true,
+            "--procs" => procs = true,
             _ => {
-                eprintln!("uso: monitor [--once] [--interval MS] [--count N] [--json] [--cores]");
+                eprintln!(
+                    "uso: monitor [--once] [--interval MS] [--count N] [--json] [--cores] [--procs]"
+                );
                 return ExitCode::FAILURE;
             }
         }
@@ -44,6 +51,10 @@ fn main() -> ExitCode {
     let mut cost = Duration::ZERO;
     let mut worst = Duration::ZERO;
     let mut n = 0u64;
+    // Amostras com e sem a leitura de processos: (soma, quantas, pior).
+    let mut with_procs = (Duration::ZERO, 0u32, Duration::ZERO);
+    let mut without = (Duration::ZERO, 0u32);
+    let mut total_procs = 0;
 
     while count.is_none_or(|c| n < c) {
         std::thread::sleep(interval);
@@ -59,11 +70,23 @@ fn main() -> ExitCode {
         cost += took;
         worst = worst.max(took);
         n += 1;
+        if let Some(p) = &sample.procs {
+            with_procs.0 += took;
+            with_procs.1 += 1;
+            with_procs.2 = with_procs.2.max(took);
+            total_procs = p.total;
+        } else {
+            without.0 += took;
+            without.1 += 1;
+        }
 
         if json {
             println!("{}", serde_json::to_string(&sample).unwrap_or_default());
         } else {
             print_line(&sample, cores);
+            if procs {
+                print_procs(&sample);
+            }
         }
     }
 
@@ -77,6 +100,16 @@ fn main() -> ExitCode {
             worst.as_secs_f64() * 1e6,
             100.0 * cpu / wall
         );
+        if with_procs.1 > 0 && without.1 > 0 {
+            let avg = |sum: Duration, k: u32| sum.as_secs_f64() * 1e6 / k as f64;
+            eprintln!(
+                "processos ({total_procs}): +{:.0} µs por leitura (com {:.0} µs, sem {:.0} µs; pior com {:.0} µs)",
+                avg(with_procs.0, with_procs.1) - avg(without.0, without.1),
+                avg(with_procs.0, with_procs.1),
+                avg(without.0, without.1),
+                with_procs.2.as_secs_f64() * 1e6,
+            );
+        }
     }
     ExitCode::SUCCESS
 }
@@ -165,6 +198,36 @@ fn print_line(s: &Sample, cores: bool) {
             .collect();
         println!("    {}", per.join("  "));
     }
+}
+
+fn print_procs(s: &Sample) {
+    let Some(p) = &s.procs else {
+        return;
+    };
+    let name = |g: &ProcGroup| {
+        if g.count > 1 {
+            format!("{} ×{}", g.name, g.count)
+        } else {
+            g.name.clone()
+        }
+    };
+    let list = |groups: &[ProcGroup], value: &dyn Fn(&ProcGroup) -> String| {
+        groups
+            .iter()
+            .map(|g| format!("{} {}", name(g), value(g)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    println!("    CPU: {}", list(&p.cpu, &|g| pct(g.cpu_pct)));
+    println!("    RAM: {}", list(&p.mem, &|g| gb(g.mem_bytes)));
+    println!(
+        "    Disco: {}",
+        list(&p.disk, &|g| format!(
+            "↓{} ↑{}",
+            rate(g.read_bps),
+            rate(g.write_bps)
+        ))
+    );
 }
 
 /// CPU (user + system) do próprio processo, em segundos.

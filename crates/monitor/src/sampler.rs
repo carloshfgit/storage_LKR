@@ -13,11 +13,25 @@ use crate::gpu::Gpus;
 use crate::mem;
 use crate::model::{DiskIo, NetIface, NetSample, Sample};
 use crate::net::{self, IfaceStat, counter_delta};
+use crate::procs::Procs;
 use crate::sensors::{self, TempSensor};
 
 /// O tempo restante da bateria só aparece depois disso: a potência das
 /// primeiras leituras oscila (o firmware atualiza a cada poucos segundos).
 const BATTERY_SETTLE: Duration = Duration::from_secs(10);
+
+/// Os processos são lidos a cada tantas amostras (a primeira inclusive): é a
+/// leitura mais cara, e a lista não precisa mudar a cada segundo.
+pub const PROCS_EVERY: u64 = 2;
+
+/// Pastas de `.desktop` do sistema, relativas à raiz (as do usuário entram em
+/// [`Sampler::system`]).
+const APP_DIRS: [&str; 4] = [
+    "usr/local/share/applications",
+    "usr/share/applications",
+    "var/lib/snapd/desktop/applications",
+    "var/lib/flatpak/exports/share/applications",
+];
 
 /// Contadores da amostra anterior.
 struct Prev {
@@ -42,6 +56,9 @@ pub struct Sampler {
     /// Placas de vídeo, procuradas na primeira amostra. Com uma NVIDIA, guarda
     /// o `nvidia-smi`, que morre junto com o `Sampler`.
     gpus: Option<Gpus>,
+    procs: Procs,
+    /// Amostras feitas, para ler os processos a cada [`PROCS_EVERY`].
+    ticks: u64,
     /// Buffer reaproveitado para os arquivos do `/proc` (ver `read_into`).
     buf: Vec<u8>,
     rx_session: u64,
@@ -51,8 +68,29 @@ pub struct Sampler {
 impl Sampler {
     /// `root` é a raiz onde estão `proc/` e `sys/`: `/` no sistema real.
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root: PathBuf = root.into();
+        let app_dirs = APP_DIRS.iter().map(|d| root.join(d)).collect();
+        Self::with_app_dirs(root, app_dirs)
+    }
+
+    /// No sistema real, os `.desktop` do usuário vêm antes dos do sistema.
+    pub fn system() -> Self {
+        let mut dirs = Vec::new();
+        let data_home = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
+        if let Some(d) = data_home {
+            dirs.push(d.join("applications"));
+        }
+        dirs.extend(APP_DIRS.iter().map(|d| Path::new("/").join(d)));
+        Self::with_app_dirs("/".into(), dirs)
+    }
+
+    fn with_app_dirs(root: PathBuf, app_dirs: Vec<PathBuf>) -> Self {
         Self {
-            root: root.into(),
+            procs: Procs::new(&root, app_dirs),
+            ticks: 0,
+            root,
             start: Instant::now(),
             prev: None,
             disk_meta: HashMap::new(),
@@ -63,10 +101,6 @@ impl Sampler {
             rx_session: 0,
             tx_session: 0,
         }
-    }
-
-    pub fn system() -> Self {
-        Self::new("/")
     }
 
     /// Uma amostra agora. Só falha sem `/proc/stat` ou `/proc/meminfo`; o
@@ -189,6 +223,11 @@ impl Sampler {
             .gpus
             .get_or_insert_with(|| Gpus::discover(&root))
             .sample(now);
+        let procs = self
+            .ticks
+            .is_multiple_of(PROCS_EVERY)
+            .then(|| self.procs.read(now));
+        self.ticks += 1;
 
         Ok(Sample {
             at_ms: now.saturating_duration_since(self.start).as_millis() as u64,
@@ -200,6 +239,7 @@ impl Sampler {
             batteries,
             battery_total,
             gpus,
+            procs,
         })
     }
 }
@@ -209,7 +249,23 @@ impl Sampler {
 /// pedaço (e cada leitura do `/proc/stat` custa caro); aqui é uma só, num
 /// buffer que cresce se precisar e é reaproveitado entre as amostras.
 fn read_into<'a>(root: &Path, rel: &str, buf: &'a mut Vec<u8>) -> io::Result<&'a str> {
-    let mut file = File::open(root.join(rel))?;
+    read_path_into(&root.join(rel), buf).map_err(|e| {
+        if e.kind() == io::ErrorKind::InvalidData {
+            invalid(rel)
+        } else {
+            e
+        }
+    })
+}
+
+/// O mesmo que [`read_into`], com o caminho inteiro.
+fn read_path_into<'a>(path: &Path, buf: &'a mut Vec<u8>) -> io::Result<&'a str> {
+    let bytes = read_bytes_into(path, buf)?;
+    std::str::from_utf8(bytes).map_err(|_| io::ErrorKind::InvalidData.into())
+}
+
+fn read_bytes_into<'a>(path: &Path, buf: &'a mut Vec<u8>) -> io::Result<&'a [u8]> {
+    let mut file = File::open(path)?;
     let mut len = 0;
     loop {
         if len == buf.len() {
@@ -222,7 +278,7 @@ fn read_into<'a>(root: &Path, rel: &str, buf: &'a mut Vec<u8>) -> io::Result<&'a
             Err(e) => return Err(e),
         }
     }
-    std::str::from_utf8(&buf[..len]).map_err(|_| invalid(rel))
+    Ok(&buf[..len])
 }
 
 fn invalid(rel: &str) -> io::Error {
@@ -312,6 +368,24 @@ mod tests {
         assert_eq!(s.net.rx_session, 0);
         assert_eq!(s.disks.len(), 2);
         assert_eq!(s.disks[1].read_bps, None, "disco novo ainda sem anterior");
+    }
+
+    #[test]
+    fn processes_every_other_sample() {
+        let fx = machine();
+        fx.write(
+            "proc/1/stat",
+            "1 (systemd) S 0 1 1 0 -1 4194560 0 0 0 0 5 5 0 0 20 0 1 0 10 1000 300 0\n",
+        );
+        let mut sampler = Sampler::new(fx.path());
+        let t0 = Instant::now();
+        let got: Vec<bool> = (0..5)
+            .map(|s| {
+                let sample = sampler.sample_at(t0 + Duration::from_secs(s)).unwrap();
+                sample.procs.is_some()
+            })
+            .collect();
+        assert_eq!(got, [true, false, true, false, true]);
     }
 
     #[test]

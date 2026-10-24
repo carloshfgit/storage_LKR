@@ -56,6 +56,7 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D47](#d47) | Histórico de 60 amostras só no frontend | ✅ | 16 |
 | [D48](#d48) | Gráficos em SVG puro, sem biblioteca | ✅ | 16 |
 | [D49](#d49) | GPU por fabricante; nunca acordar a dedicada suspensa | ✅ | 18 |
+| [D50](#d50) | "Top 5" processos agrupados por aplicativo, só leitura | ✅ | 19 |
 | [D53](#d53) | Sensores e bateria: escolha do sensor, limiar e as contas do UPower | ✅ | 17 |
 
 ---
@@ -711,8 +712,39 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 - O filtro de consumo descarta os valores absurdos, mas um valor errado abaixo do limite (29,8 W com a placa parada, nesta Radeon) passa.
 - Intel: só a frequência. O `act_freq` pode dar 0 com a GPU em RC6.
 
+### D50 — "Top 5" processos agrupados por aplicativo, só leitura <a id="d50"></a>
+**Decisão:**
+- A cada 2 amostras, o monitor lê todos os processos e devolve três listas de até 5 grupos: por CPU, por memória e por disco. A UI só escolhe a lista.
+- **Grupo:** um processo entra no grupo do pai quando o pai tem o mesmo `comm` (as abas do Chrome, os processos do Electron, `node` que abre `node`), subindo até a raiz. O nome vem do `.desktop` do executável da raiz ("Google Chrome"); grupos do mesmo `.desktop` se juntam (o `chrome_crashpad_handler`, em outra árvore, entra no Chrome). Sem `.desktop`, o nome do executável (o `comm` tem no máximo 15 caracteres: `gnome-terminal-` vira `gnome-terminal-server`).
+- **`.desktop`:** ligado pelo `argv[0]` da raiz: caminho real igual ao do `Exec`, mesmo nome de arquivo, ou mesma pasta própria do app (o `Exec=/usr/bin/google-chrome-stable` é um script em `/opt/google/chrome/`, onde roda o `chrome`). Entradas `NoDisplay` e `Hidden` ficam de fora; entre as visíveis, a sem argumentos vence (`libreoffice` e não `libreoffice --calc`). Wrappers (`sh`, `env`, `snap`, `flatpak`…) e pastas genéricas (`bin`, `/opt`, `/usr/lib`, `$HOME`…) não ligam nada.
+- **Por processo**, só o `/proc/[pid]/stat`: ele já traz `comm`, pai, `utime + stime`, início e RSS (no lugar de `comm` e `statm`, dois arquivos a menos). CPU em % de um núcleo, como o `top`; a UI também mostra em % do processador. Memória = soma do RSS.
+- **Disco** pelo `/proc/[pid]/io` (`read_bytes`/`write_bytes`), que só abre nos processos do próprio usuário. Um que falha não é tentado de novo; um que não usou CPU desde a leitura anterior não é relido (não fez I/O), e a taxa seguinte conta desde a última leitura de fato.
+- Threads do kernel (`PF_KTHREAD`) e zumbis ficam de fora. O pid é identificado junto com o início, porque o kernel reaproveita pids.
+- Só leitura: não há "encerrar".
+
+**Por quê:**
+- Por PID, o Chrome ocupa as 5 linhas: aqui são 22 processos. Agrupado, aparece como "Google Chrome ×22", que é o que o usuário reconhece e pode fechar sozinho.
+- O `comm` do pai separa bem os casos: um `chrome` aberto pelo `bash` não é do navegador, e dois `node` independentes ficam em duas linhas. Só o `.desktop`, que diz qual é o app, junta árvores diferentes.
+- Ler o `stat` de todos é o mínimo para saber a CPU de cada processo, e é o grosso do custo: o kernel soma os tempos de todas as threads de cada processo. Medido nesta máquina (183 processos, i7-7500U): 3,8 ms por leitura num laço quente; a cada 2 s, com a CPU saindo do ocioso a 800 MHz, de 3 a 15 ms de CPU por leitura, quase tudo no `stat`. Pular o `io` dos processos parados (só ~20 dos 183 são relidos) e fazer um `read` só por arquivo (sem a chamada extra para achar o fim) tiraram o resto.
+- A cada 2 s: a lista não precisa mudar a cada segundo, e o `yes > /dev/null` aparece no topo em até 2 s.
+- "Encerrar" seria uma ação destrutiva fora do propósito do app, como no detalhe do Docker (D42).
+
+**Descartado:**
+- Lista por PID: o Chrome tomaria as 5 linhas.
+- Juntar todos os processos de mesmo nome: dois `node` de projetos diferentes virariam um.
+- `statm` e `comm` à parte: o `stat` já tem os dois valores.
+- PSS (`smaps_rollup`) no lugar do RSS: não conta duas vezes a memória compartilhada, mas é bem mais caro e não abre nos processos de outros usuários.
+- Ler o `io` de todos a cada leitura: o dobro de arquivos, para processos que não fizeram nada.
+- `/proc/[pid]/exe` para o executável: não abre nos processos de outros usuários; o `cmdline` abre.
+
+**Limitações:**
+- A memória de um grupo soma o RSS de cada processo, e as páginas compartilhadas (bibliotecas, memória do Chrome entre abas) contam mais de uma vez. O total de um app grande fica acima do real.
+- O disco conta os bytes no momento em que o processo os pede: uma gravação aparece quando suja o cache de páginas (o `dd` marcou 904 MB/s, contra 472 MB/s do disco), e a gravação de fato, feita depois pelas threads do kernel, não aparece em ninguém.
+- Um processo que fez I/O com tão pouca CPU que não somou um tick (10 ms) em 2 s não tem o `io` relido; o que ele fez aparece na leitura seguinte em que usar CPU.
+- Apps em Flatpak ficam com o nome do executável: o `Exec` é `flatpak run`, e o processo roda com caminhos de dentro do sandbox.
+
 ### D53 — Sensores e bateria: escolha do sensor, limiar e as contas do UPower <a id="d53"></a>
-(D50 a D52 estão reservadas no PLAN-V2 para o "Top 5", as metas de custo e a compatibilidade.)
+(D51 e D52 estão reservadas no PLAN-V2 para as metas de custo e a compatibilidade.)
 
 **Decisão:**
 - **CPU:** um sensor só, escolhido uma vez por uma ordem fixa: o do próprio chip (`coretemp`, `k10temp`/`zenpower` com `Tdie` antes de `Tctl`, `cpu_thermal`), depois a zona `x86_pkg_temp` e, por último, o `acpitz` da placa, mostrado com `~`.

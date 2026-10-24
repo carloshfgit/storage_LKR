@@ -17,6 +17,9 @@ pub struct Sample {
     pub battery_total: Option<BatteryTotal>,
     /// Uma por placa em `/sys/class/drm`; vazio sem GPU (VM, servidor).
     pub gpus: Vec<GpuSample>,
+    /// "Top 5" processos: a cada [`PROCS_EVERY`](crate::PROCS_EVERY) amostras,
+    /// `None` nas outras.
+    pub procs: Option<ProcTop>,
 }
 
 /// Uma temperatura com o limiar de alerta do sensor.
@@ -224,4 +227,35 @@ pub struct GpuSample {
     pub freq_mhz: Option<u32>,
     pub freq_max_mhz: Option<u32>,
     pub note: Option<GpuNote>,
+}
+
+/// Os processos de um aplicativo: os que têm o mesmo `comm` do pai (as abas do
+/// Chrome) e, com nome pelo `.desktop`, todos os do mesmo app.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ProcGroup {
+    /// Estável entre as leituras, para a lista animar a troca de posição:
+    /// `app:<id do .desktop>` ou `pid:<raiz do grupo>`.
+    pub key: String,
+    pub name: String,
+    pub count: u32,
+    /// % de um núcleo, como o `top` (passa de 100 com várias threads). `None`
+    /// na primeira leitura.
+    pub cpu_pct: Option<f32>,
+    /// Soma do RSS: a memória compartilhada entre os processos conta em cada um.
+    pub mem_bytes: u64,
+    /// Só os processos do próprio usuário (o `/proc/[pid]/io` dos outros não
+    /// abre); `None` se nenhum do grupo abre, ou na primeira leitura.
+    pub read_bps: Option<f64>,
+    pub write_bps: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ProcTop {
+    /// Processos lidos (sem threads do kernel).
+    pub total: u32,
+    /// Até 5 por lista; a de CPU vem vazia na primeira leitura, e a de disco
+    /// só tem quem leu ou gravou.
+    pub cpu: Vec<ProcGroup>,
+    pub mem: Vec<ProcGroup>,
+    pub disk: Vec<ProcGroup>,
 }

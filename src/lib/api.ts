@@ -454,6 +454,31 @@ export interface GpuSample extends GpuSpec {
   note: GpuNote | null;
 }
 
+/** Os processos de um aplicativo (mesmo `comm` do pai, ou o mesmo `.desktop`). */
+export interface ProcGroup {
+  /** Estável entre leituras: `app:<id do .desktop>` ou `pid:<raiz>`. */
+  key: string;
+  name: string;
+  count: number;
+  /** % de um núcleo, como o `top` (passa de 100); `null` na primeira leitura. */
+  cpu_pct: number | null;
+  /** Soma do RSS. */
+  mem_bytes: number;
+  /** Só processos do próprio usuário; `null` se nenhum do grupo informa. */
+  read_bps: number | null;
+  write_bps: number | null;
+}
+
+export interface ProcTop {
+  /** Processos lidos (sem threads do kernel). */
+  total: number;
+  /** Até 5; vazia na primeira leitura. */
+  cpu: ProcGroup[];
+  mem: ProcGroup[];
+  /** Só quem leu ou gravou. */
+  disk: ProcGroup[];
+}
+
 export interface Sample {
   /** ms desde o início da sessão (relógio monotônico). */
   at_ms: number;
@@ -468,6 +493,8 @@ export interface Sample {
   battery_total: BatteryTotal | null;
   /** Uma por placa; vazio sem GPU. */
   gpus: GpuSample[];
+  /** A cada 2 amostras; `null` nas outras. */
+  procs: ProcTop | null;
 }
 
 export interface DiskSpec {
