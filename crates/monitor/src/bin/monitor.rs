@@ -1,0 +1,164 @@
+//! CLI de validação do monitor: imprime uma amostra por intervalo, para
+//! comparar com `top`, `free -b`, `iostat -d 1` e `ifstat`.
+//!
+//! Uso: `monitor [--once] [--interval MS] [--count N] [--json] [--cores]`
+
+use std::process::ExitCode;
+use std::time::{Duration, Instant};
+
+use monitor::{Sample, Sampler};
+
+fn main() -> ExitCode {
+    let mut interval = Duration::from_secs(1);
+    let mut count: Option<u64> = None;
+    let mut json = false;
+    let mut cores = false;
+
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            // Duas leituras: a primeira não tem taxas.
+            "--once" => count = Some(1),
+            "--interval" => {
+                if let Some(ms) = args.next().and_then(|v| v.parse().ok()) {
+                    interval = Duration::from_millis(ms);
+                }
+            }
+            "--count" => count = args.next().and_then(|v| v.parse().ok()),
+            "--json" => json = true,
+            "--cores" => cores = true,
+            _ => {
+                eprintln!("uso: monitor [--once] [--interval MS] [--count N] [--json] [--cores]");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let mut sampler = Sampler::system();
+    if let Err(e) = sampler.sample() {
+        eprintln!("erro: {e}");
+        return ExitCode::FAILURE;
+    }
+    let start_cpu = process_cpu_s();
+    let started = Instant::now();
+    let mut cost = Duration::ZERO;
+    let mut worst = Duration::ZERO;
+    let mut n = 0u64;
+
+    while count.is_none_or(|c| n < c) {
+        std::thread::sleep(interval);
+        let t = Instant::now();
+        let sample = match sampler.sample() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("erro: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let took = t.elapsed();
+        cost += took;
+        worst = worst.max(took);
+        n += 1;
+
+        if json {
+            println!("{}", serde_json::to_string(&sample).unwrap_or_default());
+        } else {
+            print_line(&sample, cores);
+        }
+    }
+
+    // Só com `--count`: o laço infinito termina no Ctrl+C.
+    if n > 1 {
+        let wall = started.elapsed().as_secs_f64();
+        let cpu = process_cpu_s() - start_cpu;
+        eprintln!(
+            "\n{n} amostras: média {:.0} µs, pior {:.0} µs; CPU do processo {:.3}% de um núcleo",
+            cost.as_secs_f64() * 1e6 / n as f64,
+            worst.as_secs_f64() * 1e6,
+            100.0 * cpu / wall
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+fn print_line(s: &Sample, cores: bool) {
+    let mut line = format!(
+        "CPU {:>5} {:>8} | RAM {}/{} swap {}",
+        pct(s.cpu.usage_pct),
+        s.cpu
+            .freq_avg_mhz
+            .map_or("—".into(), |m| format!("{:.2} GHz", m as f64 / 1000.0)),
+        gb(s.mem.used),
+        gb(s.mem.total),
+        gb(s.mem.swap_used),
+    );
+    if let Some(z) = &s.mem.zram {
+        line += &format!(" zram {}→{}", gb(z.orig_bytes), gb(z.compr_bytes));
+    }
+    if let Some(p) = s.mem.psi {
+        line += &format!(" psi {:.1}%", p.some_avg10);
+    }
+    for d in &s.disks {
+        line += &format!(
+            " | {} ↓{} ↑{} {}",
+            d.name,
+            rate(d.read_bps),
+            rate(d.write_bps),
+            pct(d.busy_pct)
+        );
+    }
+    line += &format!(
+        " | rede ↓{} ↑{} (sessão ↓{} ↑{})",
+        rate(s.net.rx_bps),
+        rate(s.net.tx_bps),
+        mb(s.net.rx_session),
+        mb(s.net.tx_session)
+    );
+    println!("{line}");
+    if cores {
+        let per: Vec<String> = s
+            .cpu
+            .cores
+            .iter()
+            .map(|c| format!("cpu{} {}", c.id, pct(c.usage_pct)))
+            .collect();
+        println!("    {}", per.join("  "));
+    }
+}
+
+/// CPU (user + system) do próprio processo, em segundos.
+fn process_cpu_s() -> f64 {
+    let Ok(stat) = std::fs::read_to_string("/proc/self/stat") else {
+        return 0.0;
+    };
+    // O nome (`comm`) vem entre parênteses e pode ter espaços: os campos
+    // contam a partir do último `)`. utime e stime são os campos 14 e 15.
+    let Some((_, rest)) = stat.rsplit_once(')') else {
+        return 0.0;
+    };
+    let f: Vec<u64> = rest
+        .split_ascii_whitespace()
+        .skip(11)
+        .take(2)
+        .filter_map(|v| v.parse().ok())
+        .collect();
+    let ticks = rustix::param::clock_ticks_per_second() as f64;
+    f.iter().sum::<u64>() as f64 / ticks
+}
+
+/// Unidades decimais, como o resto do app.
+fn gb(bytes: u64) -> String {
+    format!("{:.2} GB", bytes as f64 / 1e9)
+}
+
+fn mb(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1e6)
+}
+
+fn rate(bps: Option<f64>) -> String {
+    bps.map_or("—".into(), |b| format!("{:.2} MB/s", b / 1e6))
+}
+
+fn pct(p: Option<f32>) -> String {
+    p.map_or("—".into(), |p| format!("{p:.1}%"))
+}

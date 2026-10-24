@@ -67,6 +67,7 @@ O passo a passo completo, com pré-requisitos, a CLI de benchmark, o build do `.
 |---|---|
 | [QUICK_SETUP](docs/QUICK_SETUP.md) | Instalar, rodar, testar, empacotar |
 | [PLAN](docs/PLAN.md) | Etapas, critérios de pronto e resultados medidos |
+| [PLAN-V2](docs/PLAN-V2.md) | Aba "Recursos": etapas 15 a 20 da telemetria em tempo real |
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | Como o motor, a ponte e a interface funcionam |
 | [DECISIONS](docs/DECISIONS.md) | Cada decisão, com o porquê e o que foi descartado |
 | [STACK_CHOICE](docs/STACK_CHOICE.md) | Por que Rust + Tauri + Svelte |

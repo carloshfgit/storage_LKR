@@ -1,0 +1,11 @@
+[package]
+name = "monitor"
+version = "1.0.1"
+authors = ["Carlos Costa"]
+license = "MIT"
+edition = "2024"
+
+[dependencies]
+rustix = { version = "1.1.5", features = ["param"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"

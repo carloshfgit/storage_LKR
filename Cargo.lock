@@ -2100,6 +2100,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitor"
+version = "1.0.1"
+dependencies = [
+ "rustix",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "muda"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

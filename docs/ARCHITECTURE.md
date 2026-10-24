@@ -32,7 +32,7 @@
 
 ```
 storage_LKR/
-├── Cargo.toml                 # workspace: ["crates/scanner", "src-tauri"]
+├── Cargo.toml                 # workspace: ["crates/monitor", "crates/scanner", "src-tauri"]
 ├── package.json  vite.config.js  svelte.config.js  tsconfig.json
 ├── crates/scanner/
 │   ├── Cargo.toml
@@ -44,6 +44,12 @@ storage_LKR/
 │       ├── classify.rs        # regras caminho/extensão → Category
 │       ├── docker.rs          # `docker system df` por daemon → DockerStatus (opcional)
 │       └── bin/scan.rs        # CLI p/ benchmark e validação
+├── crates/monitor/            # telemetria em tempo real (V2, §11)
+│   └── src/
+│       ├── lib.rs  model.rs   # Sampler, Sample e os tipos serializados
+│       ├── sampler.rs         # junta os coletores e calcula as taxas
+│       ├── cpu.rs  mem.rs  disk_io.rs  net.rs   # parsers puros de /proc e /sys
+│       └── bin/monitor.rs     # CLI p/ validar contra top, free, iostat, sar
 ├── src-tauri/
 │   ├── Cargo.toml  tauri.conf.json
 │   ├── build.rs               # lista de commands → permissões allow-<command>
@@ -403,3 +409,33 @@ O último `ScanResult` é salvo em `$XDG_CACHE_HOME/storage-lkr/last.json` (norm
 - Atualização incremental com inotify ou fanotify.
 - Modo privilegiado via `pkexec` para zerar o "sem acesso".
 - Podman (`podman system df`). Hoje `~/.local/share/containers` só é marcado como app (regra 1), sem card próprio.
+
+---
+
+## 11. Monitor de recursos (V2)
+
+Plano em [PLAN-V2.md](PLAN-V2.md). O crate `crates/monitor` é Rust puro, sem Tauri e sem relação com o `scanner`, e lê direto de `/proc` e `/sys` (DECISIONS D45).
+
+**`Sampler`:**
+- `Sampler::new(root)` recebe a raiz onde estão `proc/` e `sys/`: `/` no sistema (`Sampler::system()`), uma pasta temporária com uma árvore falsa nos testes (`fixture.rs`).
+- `sample()` lê os contadores, compara com os da amostra anterior e devolve uma `Sample`. As taxas usam o tempo real decorrido (`Instant`), não o intervalo pedido, e vêm `None` na primeira amostra.
+- Só falha sem `/proc/stat` ou `/proc/meminfo`. Os outros arquivos, se faltarem (container, VM, kernel antigo), deixam a parte deles vazia.
+- Os arquivos do `/proc` são lidos de uma vez num buffer reaproveitado (`read_into`). O `fs::read_to_string` faria um `fstat`, começaria com 32 bytes e leria pedaço por pedaço, porque o procfs informa tamanho 0.
+- Contador que volta (interface que caiu e voltou, contador de 32 bits que deu a volta) conta como zero, para não desenhar um pico falso.
+
+**Fontes (Etapa 15):**
+
+| Métrica | Fonte | Regra |
+|---|---|---|
+| Uso da CPU, total e por núcleo | `/proc/stat` | `1 − Δ(idle + iowait) / Δtotal`, com os 8 primeiros campos (o `guest` já está em `user`). O iowait conta como ocioso, como no `top` e no GNOME. Núcleo desligado não tem linha e não aparece |
+| Frequência | `cpufreq/scaling_cur_freq` de cada núcleo | Média e máxima. Sem `cpufreq` (VM), o `cpu MHz` do `/proc/cpuinfo`; em ARM sem nenhum dos dois, `None` |
+| Memória | `/proc/meminfo` | Usada = `MemTotal − MemAvailable`, como o `free`. Sem `MemAvailable` (kernel < 3.14), `MemFree + Buffers + Cached` |
+| Swap | `/proc/meminfo` | `SwapTotal − SwapFree`; inclui o zRAM usado como swap |
+| zRAM | `/sys/block/zram*/{disksize,mm_stat}` | Soma dos dispositivos com `disksize > 0`: dados originais, comprimidos e memória ocupada |
+| Pressão de memória | `/proc/pressure/memory` | `avg10` das linhas `some` e `full`; `None` sem PSI |
+| Disco | `/proc/diskstats` | Só discos físicos inteiros: em `/sys/block` (sem partições), com `device/`, fora `loop`, `ram`, `zram`, `sr`, `fd`, `nbd`, `dm-*`, `md*` e as partições de boot/RPMB do eMMC. Bytes = setores × 512. Ocupado = Δ`io_ticks`, como o `%util` do `iostat`. Tipo pelo nome (`nvme`, `mmcblk`, `vd`/`xvd`, `sd`) e USB pelo link do sysfs; modelo de `device/model` ou `device/name`. Os metadados ficam em cache por nome até ele sumir do `diskstats` |
+| Rede | `/proc/net/dev` | Só interfaces com `device/` (fora `lo`, bridges, `veth`, VPN). Wi-Fi por `wireless/` ou `phy80211/`. Total da sessão = soma das diferenças desde a primeira amostra. Também em cache por nome |
+| Uptime | `/proc/uptime` | Primeiro campo |
+
+**CLI (`bin/monitor.rs`):** `monitor` imprime uma linha por segundo até o Ctrl+C. `--interval MS`, `--count N` (no fim, o custo médio e o pior de uma amostra e a CPU do próprio processo), `--once` (uma amostra com taxas), `--json` (uma `Sample` por linha) e `--cores` (uso por núcleo).
+

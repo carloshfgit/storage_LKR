@@ -51,6 +51,7 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D42](#d42) | Detalhe do Docker só de leitura, com dicas de comandos | ✅ | 13 |
 | [D43](#d43) | CSS dos componentes injetado pelo JS no dev | ✅ | 13 |
 | [D44](#d44) | Esvaziar a Lixeira item por item; itens travados com comandos para o terminal | ✅ | 14 |
+| [D45](#d45) | Monitor num crate próprio, lendo `/proc` e `/sys` direto | ✅ | 15 |
 
 ---
 
@@ -599,4 +600,30 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 - A checagem não considera ACLs nem o atributo imutável (`chattr +i`). Nesses casos, o recusado vem com o erro do sistema, sem comandos.
 - O comando do Docker não funciona se o caminho da Lixeira tiver `:` (separador do `-v`); o do `sudo` continua valendo.
 - Ser de um grupo de administradores não garante o `sudo` (o sudoers pode ser outro), e o contrário também vale. É só para escolher o texto; o comando é o mesmo.
+
+### D45 — Monitor num crate próprio, lendo `/proc` e `/sys` direto <a id="d45"></a>
+**Decisão:**
+- A telemetria da aba "Recursos" (PLAN-V2) fica em `crates/monitor`, separado do `scanner` e sem Tauri, com o CLI `monitor` para conferir os números.
+- Os coletores leem `/proc` e `/sys` direto, sem o crate `sysinfo`. Cada um é um parser puro sobre o texto do arquivo, e o `Sampler` recebe a raiz do sistema: nos testes, uma árvore falsa numa pasta temporária.
+- Os arquivos do `/proc` são lidos numa única leitura, para um buffer reaproveitado entre as amostras.
+- Regras escolhidas para os números baterem com as ferramentas de referência e não contarem nada duas vezes:
+  - o iowait conta como ocioso, como no `top` e no GNOME;
+  - só discos físicos inteiros: `dm-*` (LVM, LUKS) e `md*` (RAID) repetem o I/O dos discos embaixo deles;
+  - só interfaces físicas (com `device/`): bridges do Docker, `veth` e VPN repetem o tráfego;
+  - contador que volta conta como zero.
+
+**Por quê:**
+- O `sysinfo` cobre CPU, memória, rede e processos, mas não GPU, temperatura de disco, zRAM, PSI nem saúde da bateria, que as próximas etapas precisam. Seriam dois caminhos de leitura, e o dele faz mais trabalho por amostra do que usamos.
+- A raiz injetável permite testar os formatos de máquinas que não temos (NVMe, eMMC, RAID, LVM, VM sem `cpufreq`, zRAM, kernel sem PSI). O app vai rodar em qualquer Ubuntu, não só nesta máquina.
+- Leitura única: o procfs informa tamanho 0, então o `fs::read_to_string` faz um `fstat`, começa com 32 bytes e lê o `/proc/stat` em vários pedaços. Com o buffer reaproveitado, a amostra completa ficou em cerca de 270 µs num laço quente.
+- Conferido nesta máquina (12 s com um `dd` de 1,5 GB): CPU a até 1 p.p. do `mpstat` (sem o iowait), 1.592 MB gravados contra 1.594 MB do `iostat`, memória igual ao `free -b` e rede igual ao `sar -n DEV`.
+
+**Descartado:**
+- `sysinfo`: pelos motivos acima.
+- Colocar no `scanner`: os dois motores não têm nada em comum, e cada um seria testado e medido junto com o outro.
+- Ler o I/O de `dm-*`/`md*` em vez dos discos físicos: o volume LVM é o que o usuário "vê", mas a temperatura e o modelo são do disco físico, e com LVM sobre RAID a escolha ficaria ambígua.
+
+**Limitações:**
+- Num disco com LUKS ou LVM, o card mostra o disco físico, não o volume.
+- O tráfego de VPN aparece só pela interface física, já cifrado (um pouco maior que o tráfego útil).
 

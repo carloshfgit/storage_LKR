@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/monitor",
     "crates/scanner",
     "src-tauri",
 ]
@@ -17,6 +18,7 @@ strip = true
 # leva o dobro (4,1–4,4 s contra 2,2 s). O resto do app segue em debug.
 [profile.dev.package]
 scanner = { opt-level = 3 }
+monitor = { opt-level = 3 }
 jwalk = { opt-level = 3 }
 rayon = { opt-level = 3 }
 rayon-core = { opt-level = 3 }
