@@ -58,6 +58,8 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D49](#d49) | GPU por fabricante; nunca acordar a dedicada suspensa | ✅ | 18 |
 | [D50](#d50) | "Top 5" processos agrupados por aplicativo, só leitura | ✅ | 19 |
 | [D53](#d53) | Sensores e bateria: escolha do sensor, limiar e as contas do UPower | ✅ | 17 |
+| [D54](#d54) | Swap em disco pelo `/proc/swaps`, separado do zRAM | ✅ | 15 (revisão) |
+| [D55](#d55) | Fonte da frequência decidida uma vez; o `cpu MHz` da VM é nominal | ✅ | 15 (revisão) |
 
 ---
 
@@ -769,3 +771,35 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 - O tempo restante oscila com a carga do momento, como no GNOME.
 - Sem `voltage_*`, uma bateria no formato de carga fica sem energia e sem potência: só o nível (`capacity`) e a saúde (se houver `charge_full_design`).
 
+### D54 — Swap em disco pelo `/proc/swaps`, separado do zRAM <a id="d54"></a>
+**Decisão:** o `swap_total`/`swap_used` da amostra são só o swap em disco (partições e arquivos), somados do `/proc/swaps` sem as linhas `/dev/zram*`. O zRAM continua no seu próprio campo (`mm_stat`). Sem o `/proc/swaps` (kernel sem swap), vale o `SwapTotal − SwapFree` do `meminfo`. Com zRAM, a UI chama a linha de "Swap em disco".
+
+**Por quê:**
+- O `SwapTotal`/`SwapFree` do `meminfo` inclui o zRAM usado como swap. O card mostrava as mesmas páginas duas vezes: na linha "Swap" e na linha "zRAM".
+- Com swapfile e zRAM juntos (Pop!_OS, Fedora, Ubuntu com `zram-tools`), não dava para saber quanto foi para o disco, que é o que deixa o computador lento.
+- O `/proc/swaps` é pequeno, lido com o mesmo buffer do resto do `/proc`, e diz o tipo de cada dispositivo.
+
+**Descartado:**
+- Subtrair o zRAM do `meminfo`: o `mm_stat` conta dados originais, e o `Used` do swap conta páginas. Os dois nem sempre batem (páginas zeradas, `same_pages`), e a diferença viraria swap em disco fantasma.
+- Manter o total e só explicar na UI: continuaria somando duas coisas com custos diferentes.
+
+**Limitações:**
+- Sem zRAM, o número continua igual ao `free -b`. Com zRAM, o `free` soma os dois, e o card não.
+- Um zRAM configurado como swap com outro nome de dispositivo (link próprio no `swapon`) contaria como disco. Não é o que `zram-tools`, `zram-generator` e `systemd-zram` fazem.
+
+### D55 — Fonte da frequência decidida uma vez; o `cpu MHz` da VM é nominal <a id="d55"></a>
+**Decisão:**
+- Na primeira amostra, o `Sampler` vê se algum núcleo tem `cpufreq/scaling_cur_freq`. Com ele, a frequência de cada núcleo é lida a cada amostra; sem ele, vem `None` na sessão inteira, sem procurar o arquivo de novo.
+- O `/proc/cpuinfo` saiu da amostra. Sem `cpufreq`, o `cpu MHz` dele vai para a ficha técnica (`cpu_nominal_mhz`), marcado como nominal.
+
+**Por quê:**
+- Antes, numa máquina sem `cpufreq`, cada amostra tentava abrir o arquivo de cada núcleo e depois lia o `cpuinfo` inteiro com `read_to_string`, a leitura em pedaços que a D45 tirou do resto do `/proc`.
+- Sem `cpufreq` e sem APERF/MPERF (o caso comum em VM), o kernel põe no `cpu MHz` o `cpu_khz` calibrado no boot. O card mostrava como frequência do momento um número que nunca muda.
+- Com `cpufreq`, o `cpu MHz` é a frequência do momento, e a ficha técnica não precisa dele.
+
+**Descartado:**
+- Continuar mostrando o `cpu MHz` da VM no card: é informação, mas parece medida e não é.
+- Reprocurar o `cpufreq` a cada N amostras: o driver é carregado no boot, e cada sessão (voltar à aba) decide de novo.
+
+**Limitações:**
+- Uma máquina física sem `cpufreq` (driver desligado no boot, `intel_pstate=disable` sem `acpi-cpufreq`) também fica sem frequência no card, e o `cpu MHz` aparece como nominal na ficha, embora ali ele varie.

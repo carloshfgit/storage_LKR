@@ -179,12 +179,12 @@
             <dd>{formatBytes(last.mem.available)}</dd>
           </div>
           <div>
-            <dt>Swap</dt>
+            <dt>{last.mem.zram ? "Swap em disco" : "Swap"}</dt>
             <dd>
               {#if last.mem.swap_total > 0}
                 {formatBytes(last.mem.swap_used)} de {formatBytes(last.mem.swap_total)}
               {:else}
-                sem swap
+                {last.mem.zram ? "nenhum" : "sem swap"}
               {/if}
             </dd>
           </div>

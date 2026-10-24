@@ -13,6 +13,9 @@ use crate::model::{DiskKind, GpuSpec};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SystemInfo {
     pub cpu_model: Option<String>,
+    /// O `cpu MHz` do `cpuinfo`, só sem `cpufreq` (VMs): nesse caso é um
+    /// valor fixo, não a frequência do momento, e a amostra vem sem ela.
+    pub cpu_nominal_mhz: Option<u32>,
     /// Núcleos físicos; `None` quando o `cpuinfo` não diz (ARM, algumas VMs).
     pub cores: Option<u32>,
     /// Threads online.
@@ -40,6 +43,12 @@ pub fn system_info(root: &Path) -> SystemInfo {
     let read = |rel: &str| fs::read_to_string(root.join(rel)).ok();
     let cpuinfo = read("proc/cpuinfo").unwrap_or_default();
     let cpu = parse_cpuinfo(&cpuinfo);
+    let mhz = crate::cpu::parse_cpuinfo_mhz(&cpuinfo);
+    let cpu_nominal_mhz = if mhz.iter().any(|&(id, _)| crate::cpu::has_cpufreq(root, id)) {
+        None
+    } else {
+        mhz.iter().map(|&(_, m)| m).max()
+    };
     let threads = if cpu.threads > 0 {
         cpu.threads
     } else {
@@ -59,6 +68,7 @@ pub fn system_info(root: &Path) -> SystemInfo {
         cpu_model: cpu.model.or_else(|| {
             read("sys/firmware/devicetree/base/model").and_then(|m| clean(m.trim_end_matches('\0')))
         }),
+        cpu_nominal_mhz,
         cores: cpu.cores,
         threads,
         ram_total: read("proc/meminfo")
@@ -239,6 +249,21 @@ core id\t\t: 1
         assert_eq!(i.distro.as_deref(), Some("Ubuntu 24.04.3 LTS"));
         assert_eq!(i.hostname.as_deref(), Some("notebook"));
         assert_eq!(i.threads, 4);
+    }
+
+    #[test]
+    fn nominal_frequency_only_without_cpufreq() {
+        let cpuinfo = "processor : 0\ncpu MHz : 2199.998\nprocessor : 1\ncpu MHz : 2199.998\n";
+        let vm = Fixture::new("info-vm");
+        vm.write("proc/cpuinfo", cpuinfo);
+        assert_eq!(system_info(vm.path()).cpu_nominal_mhz, Some(2200));
+        // Com `cpufreq`, o `cpu MHz` é a frequência do momento, e não fica na ficha.
+        let pc = Fixture::new("info-cpufreq");
+        pc.write("proc/cpuinfo", cpuinfo).write(
+            "sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+            "800000\n",
+        );
+        assert_eq!(system_info(pc.path()).cpu_nominal_mhz, None);
     }
 
     #[test]

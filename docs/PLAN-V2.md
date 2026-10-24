@@ -91,8 +91,8 @@ enum MonitorEvent {
 ## Etapa 15 — Motor de telemetria (CLI)
 Base do crate `monitor`, só com o que vem de `/proc` e é igual em qualquer máquina: CPU, memória, disco e rede.
 - [x] Criar `crates/monitor/` e incluí-lo no workspace; perfil `dev` com `opt-level = 3` para ele (como o `scanner`).
-- [x] `cpu.rs`: `/proc/stat` (linha `cpu` e `cpuN`), uso = 1 − Δ(idle + iowait) / Δtotal. Frequência por `/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq` (média e máxima), com `/proc/cpuinfo` (`cpu MHz`) como alternativa.
-- [x] `mem.rs`: `/proc/meminfo`. Usada = `MemTotal − MemAvailable` (como o `free` e o GNOME). Swap de `SwapTotal/SwapFree`; zRAM de `/sys/block/zram*/mm_stat` (dados originais e comprimidos, para mostrar a taxa de compressão). Pressão de `/proc/pressure/memory` (`some avg10`), quando o kernel tiver PSI.
+- [x] `cpu.rs`: `/proc/stat` (linha `cpu` e `cpuN`), uso = 1 − Δ(idle + iowait) / Δtotal. Frequência por `/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq` (média e máxima). Sem `cpufreq` (VM), sem frequência na amostra; o `cpu MHz` do `/proc/cpuinfo` vai para a ficha técnica como nominal (revisão, D55).
+- [x] `mem.rs`: `/proc/meminfo`. Usada = `MemTotal − MemAvailable` (como o `free` e o GNOME). Swap em disco pelo `/proc/swaps`, sem os `/dev/zram*` (revisão, D54; antes, `SwapTotal/SwapFree`, que inclui o zRAM); zRAM de `/sys/block/zram*/mm_stat` (dados originais e comprimidos, para mostrar a taxa de compressão). Pressão de `/proc/pressure/memory` (`some avg10`), quando o kernel tiver PSI.
 - [x] `disk_io.rs`: `/proc/diskstats`, só **discos físicos inteiros**: os nomes que existem em `/sys/block` (as partições não aparecem lá) e têm `device/`. Isso inclui `sd*` (SATA/USB), `nvme*n*`, `mmcblk*` (eMMC e cartão SD, sem `mmcblk*boot*` nem `*rpmb`), `vd*`/`xvd*` (VMs). Ficam de fora `loop*`, `ram*`, `zram*`, `sr*`, e também `dm-*` (LVM, LUKS) e `md*` (RAID), que repetem o I/O dos discos físicos embaixo e o contariam duas vezes. Bytes = setores × 512 (o `diskstats` sempre conta em 512, independente do setor físico). Modelo em `device/model` (ou `device/name` no eMMC); tipo pelo nome e por `queue/rotational` (HD/SSD).
 - [x] `net.rs`: `/proc/net/dev`, só interfaces físicas (com `/sys/class/net/<i>/device`). Fica de fora `lo`, `docker0`, `br-*`, `veth*`, `virbr*`, `tun*`/`wg*` (VPN contaria o tráfego duas vezes). Total da sessão = soma das diferenças desde a primeira amostra, com proteção contra contador zerado (interface que caiu e voltou).
 - [x] `Sampler::new(root)` + `sample()`; `uptime` de `/proc/uptime`.
@@ -121,6 +121,11 @@ Base do crate `monitor`, só com o que vem de `/proc` e é igual em qualquer má
 - A 1 Hz, a média (1,07 ms) fica um pouco acima de 1 ms porque a CPU desta máquina volta a 800 MHz entre as amostras e cada leitura do `/proc` paga a saída do estado ocioso. A meta que importa, o custo em CPU, ficou em 0,10% de um núcleo, um quinto do limite.
 - A rede foi conferida só com tráfego baixo (cerca de 70 kB/s). Falta repetir com um download grande.
 - O iowait conta como ocioso, como no `top`. Comparado com `100 − idle` do `mpstat`, a diferença durante o `dd` chegava a 36 p.p.
+
+**Revisão (24/10/2026):**
+- **Swap separado do zRAM** (D54): o `SwapTotal` do `meminfo` inclui o zRAM usado como swap, e o card mostrava as mesmas páginas nas linhas "Swap" e "zRAM". Agora o swap vem do `/proc/swaps` sem os `/dev/zram*` (o `meminfo` fica como alternativa), e a linha se chama "Swap em disco" quando há zRAM. Nesta máquina, sem zRAM, continua igual ao `free -b` (4.294.963.200 B).
+- **Frequência** (D55): se há `cpufreq` é decidido na primeira amostra. Sem ele (VM), a amostra vem sem frequência e não lê mais nada a cada segundo; o `cpu MHz` do `cpuinfo`, que numa VM é fixo, vai para a ficha técnica como nominal.
+- 5 testes novos (102 no crate; 205 no workspace), clippy limpo, `npm run check` sem erros.
 
 ---
 

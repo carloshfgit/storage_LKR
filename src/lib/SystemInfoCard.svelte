@@ -1,7 +1,7 @@
 <!-- Card Ficha técnica da aba Recursos: o que não muda, mais o tempo ligado (a cada amostra). -->
 <script lang="ts">
   import type { GpuSpec, SystemInfo } from "./api";
-  import { formatBytes, formatDuration } from "./format";
+  import { formatBytes, formatDuration, formatMHz } from "./format";
   import MetricCard from "./MetricCard.svelte";
   import { diskKind, gpuKind, gpuName } from "./resources";
 
@@ -13,8 +13,15 @@
       .filter(Boolean)
       .join(" · ");
 
+  /** "2 núcleos · 4 threads"; numa VM, mais a frequência nominal (a amostra vem sem frequência). */
   const cores = $derived(
-    info.cores ? `${info.cores} núcleos · ${info.threads} threads` : `${info.threads} threads`,
+    [
+      info.cores ? `${info.cores} núcleos` : "",
+      `${info.threads} threads`,
+      info.cpu_nominal_mhz ? `${formatMHz(info.cpu_nominal_mhz)} nominal` : "",
+    ]
+      .filter(Boolean)
+      .join(" · "),
   );
 </script>
 

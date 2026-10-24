@@ -354,6 +354,7 @@ export interface MemSample {
   /** `total − available`, como o `free`. */
   used: number;
   available: number;
+  /** Só o swap em disco (`/proc/swaps`); o zRAM usado como swap vem em `zram`. */
   swap_total: number;
   swap_used: number;
   zram: Zram | null;
@@ -507,6 +508,8 @@ export interface DiskSpec {
 
 export interface SystemInfo {
   cpu_model: string | null;
+  /** O `cpu MHz` fixo das VMs (sem `cpufreq`); `null` quando há frequência do momento. */
+  cpu_nominal_mhz: number | null;
   /** Núcleos físicos; `null` quando o sistema não informa. */
   cores: number | null;
   threads: number;

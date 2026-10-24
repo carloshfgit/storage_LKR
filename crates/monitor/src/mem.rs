@@ -66,6 +66,24 @@ pub(crate) fn parse_psi(text: &str) -> Option<Psi> {
     })
 }
 
+/// Swap em disco (partições e arquivos) do `/proc/swaps`, em bytes:
+/// `(total, usado)`. O zRAM usado como swap fica de fora: ele já aparece em
+/// [`Zram`], e o `SwapTotal` do `meminfo` somaria os dois.
+pub(crate) fn parse_swaps(text: &str) -> (u64, u64) {
+    // `Filename Type Size Used Priority`, tamanhos em KiB. Espaço no nome vem
+    // escapado (`\040`), então os campos se separam por espaço. O cabeçalho
+    // cai fora porque `Size` não é número.
+    text.lines()
+        .filter_map(|line| {
+            let mut f = line.split_ascii_whitespace();
+            let name = f.next()?;
+            let size: u64 = f.nth(1)?.parse().ok()?;
+            let used: u64 = f.next()?.parse().ok()?;
+            (!name.starts_with("/dev/zram")).then_some((size * 1024, used * 1024))
+        })
+        .fold((0, 0), |(total, used), (s, u)| (total + s, used + u))
+}
+
 /// `orig_data_size compr_data_size mem_used_total …` do `mm_stat`.
 fn parse_mm_stat(text: &str) -> Option<(u64, u64, u64)> {
     let mut f = text.split_ascii_whitespace().map(|v| v.parse::<u64>().ok());
@@ -107,13 +125,17 @@ fn zram(root: &Path) -> Option<Zram> {
     (out.devices > 0).then_some(out)
 }
 
-pub(crate) fn mem_sample(root: &Path, info: Meminfo) -> MemSample {
+/// `swaps`: o resultado de [`parse_swaps`]; sem o `/proc/swaps` (kernel sem
+/// swap), vale o `meminfo`.
+pub(crate) fn mem_sample(root: &Path, info: Meminfo, swaps: Option<(u64, u64)>) -> MemSample {
+    let (swap_total, swap_used) =
+        swaps.unwrap_or((info.swap_total, info.swap_total - info.swap_free));
     MemSample {
         total: info.total,
         used: info.total - info.available,
         available: info.available,
-        swap_total: info.swap_total,
-        swap_used: info.swap_total - info.swap_free,
+        swap_total,
+        swap_used: swap_used.min(swap_total),
         zram: zram(root),
         psi: fs::read_to_string(root.join("proc/pressure/memory"))
             .ok()
@@ -153,7 +175,7 @@ HugePages_Total:       0
         )
         .unwrap();
         let fx = Fixture::new("noswap");
-        let s = mem_sample(fx.path(), m);
+        let s = mem_sample(fx.path(), m, Some(parse_swaps(SWAPS_HEADER)));
         assert_eq!((s.swap_total, s.swap_used), (0, 0));
         assert_eq!(s.used, 600 * 1024);
         assert!(s.zram.is_none());
@@ -198,7 +220,8 @@ HugePages_Total:       0
             .dir("sys/block/sda")
             .write("proc/pressure/memory", "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\n");
         let m = parse_meminfo("MemTotal: 1000 kB\nMemAvailable: 400 kB\nSwapTotal: 8388608 kB\nSwapFree: 7340032 kB\n").unwrap();
-        let s = mem_sample(fx.path(), m);
+        let swaps = format!("{SWAPS_HEADER}/dev/zram0 partition 8388604 1048576 100\n");
+        let s = mem_sample(fx.path(), m, Some(parse_swaps(&swaps)));
         assert_eq!(
             s.zram,
             Some(Zram {
@@ -209,7 +232,35 @@ HugePages_Total:       0
                 mem_used: 285212672,
             })
         );
-        assert_eq!(s.swap_used, 1024 * 1024 * 1024);
+        // O swap do `meminfo` (1 GiB usado) é o próprio zRAM: não conta de novo.
+        assert_eq!((s.swap_total, s.swap_used), (0, 0));
         assert!(s.psi.is_some());
+    }
+
+    const SWAPS_HEADER: &str = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n";
+
+    #[test]
+    fn swaps_on_disk_without_zram() {
+        // Arquivo do instalador do Ubuntu, partição e zRAM juntos.
+        let text = format!(
+            "{SWAPS_HEADER}/swap.img                               file\t\t4194300\t\t1024\t\t-2\n\
+             /dev/nvme0n1p3                          partition\t2097148\t\t0\t\t-3\n\
+             /dev/zram0                              partition\t8388604\t\t524288\t\t100\n\
+             /home/ana/meu\\040swap                   file\t\t1024\t\t0\t\t-4\n"
+        );
+        assert_eq!(
+            parse_swaps(&text),
+            ((4194300 + 2097148 + 1024) * 1024, 1024 * 1024)
+        );
+        assert_eq!(parse_swaps(SWAPS_HEADER), (0, 0));
+    }
+
+    #[test]
+    fn without_proc_swaps_uses_meminfo() {
+        let m = parse_meminfo(MEMINFO).unwrap();
+        let fx = Fixture::new("noswaps");
+        let s = mem_sample(fx.path(), m, None);
+        assert_eq!(s.swap_total, 4194300 * 1024);
+        assert_eq!(s.swap_used, (4194300 - 4104600) * 1024);
     }
 }

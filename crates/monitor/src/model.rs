@@ -55,6 +55,8 @@ pub struct MemSample {
     /// `total − available`, como o `free` e o GNOME.
     pub used: u64,
     pub available: u64,
+    /// Só o swap em disco (partições e arquivos, do `/proc/swaps`): o zRAM
+    /// usado como swap vem em `zram`, para não contar duas vezes.
     pub swap_total: u64,
     pub swap_used: u64,
     pub zram: Option<Zram>,

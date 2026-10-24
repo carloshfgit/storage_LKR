@@ -51,6 +51,9 @@ pub struct Sampler {
     disk_meta: HashMap<String, Option<DiskMeta>>,
     /// Mesma ideia para as interfaces: `Some(wireless)` se for física.
     iface_meta: HashMap<String, Option<bool>>,
+    /// Se há `cpufreq`, decidido na primeira amostra: sem ele (VMs), a
+    /// frequência fica `None` sem procurar os arquivos a cada amostra.
+    cpufreq: Option<bool>,
     /// Sensor de temperatura da CPU, procurado na primeira amostra.
     cpu_sensor: Option<Option<TempSensor>>,
     /// Placas de vídeo, procuradas na primeira amostra. Com uma NVIDIA, guarda
@@ -95,6 +98,7 @@ impl Sampler {
             prev: None,
             disk_meta: HashMap::new(),
             iface_meta: HashMap::new(),
+            cpufreq: None,
             cpu_sensor: None,
             gpus: None,
             buf: vec![0; 16 * 1024],
@@ -117,6 +121,9 @@ impl Sampler {
             .ok_or_else(|| invalid("proc/stat"))?;
         let meminfo = mem::parse_meminfo(read_into(&root, "proc/meminfo", buf)?)
             .ok_or_else(|| invalid("proc/meminfo"))?;
+        let swaps = read_into(&root, "proc/swaps", buf)
+            .ok()
+            .map(mem::parse_swaps);
         let diskstats = read_into(&root, "proc/diskstats", buf)
             .map(disk_io::parse_diskstats)
             .unwrap_or_default();
@@ -135,13 +142,19 @@ impl Sampler {
             .map(|p| now.saturating_duration_since(p.at).as_secs_f64())
             .filter(|&dt| dt > 0.0);
 
-        let mut cpu = cpu::cpu_sample(&root, prev.map(|p| &p.cpu), &cpu_stat);
+        let cpufreq = *self.cpufreq.get_or_insert_with(|| {
+            cpu_stat
+                .cores
+                .iter()
+                .any(|&(id, _)| cpu::has_cpufreq(&root, id))
+        });
+        let mut cpu = cpu::cpu_sample(&root, prev.map(|p| &p.cpu), &cpu_stat, cpufreq);
         cpu.temp = self
             .cpu_sensor
             .get_or_insert_with(|| sensors::cpu_sensor(&root))
             .as_ref()
             .and_then(TempSensor::read);
-        let mem = mem::mem_sample(&root, meminfo);
+        let mem = mem::mem_sample(&root, meminfo, swaps);
 
         self.disk_meta
             .retain(|name, _| diskstats.iter().any(|d| &d.name == name));
@@ -386,6 +399,39 @@ mod tests {
             })
             .collect();
         assert_eq!(got, [true, false, true, false, true]);
+    }
+
+    #[test]
+    fn frequency_source_is_decided_once() {
+        // VM: sem `cpufreq`, o `cpu MHz` fixo do `cpuinfo` não vira frequência.
+        let fx = machine();
+        fx.write("proc/cpuinfo", "processor : 0\ncpu MHz : 2199.998\n");
+        let mut sampler = Sampler::new(fx.path());
+        let t0 = Instant::now();
+        assert_eq!(sampler.sample_at(t0).unwrap().cpu.freq_avg_mhz, None);
+        // A decisão vale para a sessão: o arquivo não é procurado de novo.
+        fx.write(
+            "sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+            "2400000\n",
+        );
+        let s = sampler.sample_at(t0 + Duration::from_secs(1)).unwrap();
+        assert_eq!(s.cpu.freq_avg_mhz, None);
+        assert_eq!(
+            Sampler::new(fx.path()).sample().unwrap().cpu.freq_avg_mhz,
+            Some(2400)
+        );
+    }
+
+    #[test]
+    fn swap_comes_from_proc_swaps() {
+        let fx = machine();
+        fx.write("proc/meminfo", "MemTotal: 1000 kB\nMemAvailable: 250 kB\nSwapTotal: 3072 kB\nSwapFree: 1024 kB\n")
+            .write("proc/swaps", "Filename Type Size Used Priority\n/swap.img file 1024 512 -2\n/dev/zram0 partition 2048 1536 100\n");
+        let s = Sampler::new(fx.path()).sample().unwrap();
+        assert_eq!(
+            (s.mem.swap_total, s.mem.swap_used),
+            (1024 * 1024, 512 * 1024)
+        );
     }
 
     #[test]

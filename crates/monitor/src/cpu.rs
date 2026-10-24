@@ -1,7 +1,7 @@
 //! Uso e frequência da CPU: `/proc/stat` e `cpufreq` (ou `/proc/cpuinfo`).
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::model::{CoreSample, CpuSample};
 
@@ -72,17 +72,32 @@ pub(crate) fn usage(prev: CpuTimes, cur: CpuTimes) -> Option<f32> {
     Some((100.0 * (1.0 - di as f64 / dt as f64)) as f32)
 }
 
+fn cpufreq_path(root: &Path, id: u32) -> PathBuf {
+    root.join(format!(
+        "sys/devices/system/cpu/cpu{id}/cpufreq/scaling_cur_freq"
+    ))
+}
+
+/// Se o núcleo tem `cpufreq`. Sem ele (VMs, alguns ARM), não há frequência
+/// do momento: decidido uma vez, para não procurar o arquivo a cada amostra.
+pub(crate) fn has_cpufreq(root: &Path, id: u32) -> bool {
+    cpufreq_path(root, id).exists()
+}
+
 /// Frequência atual de um núcleo pelo `cpufreq`, em MHz.
 fn cpufreq_mhz(root: &Path, id: u32) -> Option<u32> {
-    let path = root.join(format!(
-        "sys/devices/system/cpu/cpu{id}/cpufreq/scaling_cur_freq"
-    ));
-    let khz: u64 = fs::read_to_string(path).ok()?.trim().parse().ok()?;
+    let khz: u64 = fs::read_to_string(cpufreq_path(root, id))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
     Some((khz / 1000) as u32)
 }
 
-/// `(processor, cpu MHz)` do `/proc/cpuinfo`, para máquinas sem `cpufreq`
-/// (VMs, alguns ARM). Em ARM o `cpuinfo` não tem `cpu MHz` e a lista fica vazia.
+/// `(processor, cpu MHz)` do `/proc/cpuinfo`. Sem `cpufreq` (VMs), o kernel
+/// põe ali um valor fixo (o do TSC), então serve só para a ficha técnica
+/// como frequência nominal. Em ARM o `cpuinfo` não tem `cpu MHz` e a lista
+/// fica vazia.
 pub(crate) fn parse_cpuinfo_mhz(text: &str) -> Vec<(u32, u32)> {
     let mut out = Vec::new();
     let mut current = None;
@@ -103,20 +118,19 @@ pub(crate) fn parse_cpuinfo_mhz(text: &str) -> Vec<(u32, u32)> {
     out
 }
 
-pub(crate) fn cpu_sample(root: &Path, prev: Option<&CpuStat>, cur: &CpuStat) -> CpuSample {
-    let mut freqs: Vec<Option<u32>> = cur
+/// `cpufreq`: se a máquina tem (ver [`has_cpufreq`]); sem ele, as
+/// frequências vêm `None` sem ler nada.
+pub(crate) fn cpu_sample(
+    root: &Path,
+    prev: Option<&CpuStat>,
+    cur: &CpuStat,
+    cpufreq: bool,
+) -> CpuSample {
+    let freqs: Vec<Option<u32>> = cur
         .cores
         .iter()
-        .map(|&(id, _)| cpufreq_mhz(root, id))
+        .map(|&(id, _)| cpufreq.then(|| cpufreq_mhz(root, id)).flatten())
         .collect();
-    if freqs.iter().all(Option::is_none)
-        && let Ok(text) = fs::read_to_string(root.join("proc/cpuinfo"))
-    {
-        let mhz = parse_cpuinfo_mhz(&text);
-        for (slot, &(id, _)) in freqs.iter_mut().zip(&cur.cores) {
-            *slot = mhz.iter().find(|&&(i, _)| i == id).map(|&(_, m)| m);
-        }
-    }
 
     let cores: Vec<CoreSample> = cur
         .cores
@@ -234,7 +248,8 @@ cpu_bogus 1 2 3 4
         )
         .write("proc/cpuinfo", "processor : 0\ncpu MHz : 100.0\n");
         let s = parse_stat(STAT).unwrap();
-        let c = cpu_sample(fx.path(), None, &s);
+        assert!(has_cpufreq(fx.path(), 0));
+        let c = cpu_sample(fx.path(), None, &s, true);
         assert_eq!(c.freq_avg_mhz, Some(3000));
         assert_eq!(c.freq_max_mhz, Some(3600));
         assert_eq!(c.cores[0].freq_mhz, Some(2400));
@@ -242,20 +257,22 @@ cpu_bogus 1 2 3 4
     }
 
     #[test]
-    fn vm_without_cpufreq_uses_cpuinfo() {
+    fn vm_without_cpufreq_has_no_live_frequency() {
+        // O `cpu MHz` da VM é fixo: vai para a ficha técnica, não para a amostra.
         let fx = Fixture::new("vm");
         fx.write(
             "proc/cpuinfo",
             "processor : 0\ncpu MHz : 2199.998\nprocessor : 1\ncpu MHz : 2199.998\n",
         );
-        let c = cpu_sample(fx.path(), None, &parse_stat(STAT).unwrap());
-        assert_eq!(c.freq_avg_mhz, Some(2200));
+        assert!(!has_cpufreq(fx.path(), 0));
+        let c = cpu_sample(fx.path(), None, &parse_stat(STAT).unwrap(), false);
+        assert_eq!((c.freq_avg_mhz, c.cores[0].freq_mhz), (None, None));
     }
 
     #[test]
     fn without_any_frequency_source() {
         let fx = Fixture::new("nofreq");
-        let c = cpu_sample(fx.path(), None, &parse_stat(STAT).unwrap());
+        let c = cpu_sample(fx.path(), None, &parse_stat(STAT).unwrap(), false);
         assert_eq!((c.freq_avg_mhz, c.freq_max_mhz), (None, None));
         assert_eq!(c.cores.len(), 2);
     }
