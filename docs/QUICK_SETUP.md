@@ -9,7 +9,7 @@ Guia para Ubuntu 24.04. Os outros documentos: [PLAN](PLAN.md) (etapas), [ARCHITE
 Se você só quer usar o **Storage Looker** e não pretende compilar ou modificar o código-fonte, instale o pacote pronto com poucos cliques:
 
 1. Acesse a página de **[Releases no GitHub](https://github.com/carloshfgit/storage_LKR/releases/latest)**.
-2. Na seção **Assets**, clique no arquivo `.deb` para baixar (ex.: `storage-looker_1.0.1_amd64.deb`).
+2. Na seção **Assets**, clique no arquivo `.deb` para baixar (ex.: `storage-looker_1.1.0_amd64.deb`).
 3. **Instale com poucos cliques:**
    - Dê **dois cliques** no arquivo `.deb` baixado e clique em **Instalar** pela Central de Aplicativos do Ubuntu; ou
    - Pelo terminal, se preferir:

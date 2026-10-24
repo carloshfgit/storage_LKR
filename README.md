@@ -43,7 +43,7 @@ Motor em **Rust** (`jwalk`, `statvfs`), janela **Tauri v2** e interface **Svelte
 Baixe o pacote `.deb` da versão mais recente na página de [Releases](https://github.com/carloshfgit/storage_LKR/releases/latest) e instale via terminal:
 
 ```bash
-sudo apt install ./storage-looker_1.0.1_amd64.deb
+sudo apt install ./storage-looker_1.1.0_amd64.deb
 ```
 
 Ou clique duas vezes no arquivo baixado para instalar pela Central de Aplicativos do Ubuntu.

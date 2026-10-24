@@ -290,7 +290,7 @@ Uma abstração por fabricante, cada uma com fallback para "não exposto" (D49).
 - [ ] Unidades e textos revisados em pt-BR; tooltip no gráfico com o valor de cada ponto (hover/foco).
 - [ ] Medição final do custo (D51) e registro no `Resultado`: CPU do processo do app com a aba Recursos aberta por 10 min, com a aba Armazenamento e minimizado.
 - [ ] Docs: ARCHITECTURE §1 (diagrama), §2 (layout), nova §11 "Monitor de recursos" (fontes de cada métrica, fallbacks, ciclo de vida); DECISIONS D45–D52; README (status e capturas de tela da aba).
-- [ ] Versão 1.1.0 nos três manifests (`package.json`, `src-tauri/Cargo.toml`, `tauri.conf.json`) e nos crates; `npm run tauri build` gera o `.deb`.
+- [x] Versão 1.1.0 nos três manifests (`package.json`, `src-tauri/Cargo.toml`, `tauri.conf.json`) e nos crates; `npm run tauri build` gera o `.deb`.
 
 **Pronto quando:** `cargo test --workspace`, `cargo clippy --workspace --all-targets` e `npm run check` limpos; o `.deb` instalado abre nas duas abas; conferência visual feita.
 
