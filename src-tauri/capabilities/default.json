@@ -20,6 +20,9 @@
     "allow-trash-caches",
     "allow-trash-items",
     "allow-restore-from-trash",
-    "allow-purge-from-trash"
+    "allow-purge-from-trash",
+    "allow-start-monitor",
+    "allow-stop-monitor",
+    "allow-system-info"
   ]
 }

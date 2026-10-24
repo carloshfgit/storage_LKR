@@ -17,6 +17,9 @@ const COMMANDS: &[&str] = &[
     "trash_items",
     "restore_from_trash",
     "purge_from_trash",
+    "start_monitor",
+    "stop_monitor",
+    "system_info",
 ];
 
 fn main() {

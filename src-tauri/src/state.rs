@@ -4,6 +4,7 @@
 
 mod cache;
 mod cleanup;
+mod monitor;
 mod trash;
 
 use std::path::{Path, PathBuf};
@@ -15,6 +16,7 @@ use serde::Serialize;
 
 pub use cache::default_path as default_cache_path;
 pub use cleanup::{Cleanup, FileItem, TrashReport};
+pub use monitor::{INTERVAL as MONITOR_INTERVAL, MonitorEvent, MonitorState};
 pub use trash::{PurgeReport, TrashItem, TrashListing};
 
 /// Mensagens enviadas ao frontend durante uma varredura, nesta ordem:

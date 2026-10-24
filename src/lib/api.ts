@@ -307,3 +307,118 @@ export function restoreFromTrash(ids: string[]): Promise<TrashReport> {
 export function purgeFromTrash(ids: string[]): Promise<PurgeReport> {
   return invoke("purge_from_trash", { ids, confirm: true });
 }
+
+// ── Monitor de recursos (aba "Recursos", PLAN-V2). Espelha crates/monitor/src/model.rs,
+// info.rs e src-tauri/src/state/monitor.rs. Taxas vêm `null` na primeira amostra, e
+// todo campo que depende do hardware pode vir `null`.
+
+export interface CoreSample {
+  id: number;
+  usage_pct: number | null;
+  freq_mhz: number | null;
+}
+
+export interface CpuSample {
+  usage_pct: number | null;
+  freq_avg_mhz: number | null;
+  freq_max_mhz: number | null;
+  /** Só os núcleos online. */
+  cores: CoreSample[];
+}
+
+export interface Zram {
+  devices: number;
+  disksize: number;
+  orig_bytes: number;
+  compr_bytes: number;
+  mem_used: number;
+}
+
+/** % do tempo esperando por memória nos últimos 10 s. */
+export interface Psi {
+  some_avg10: number;
+  full_avg10: number | null;
+}
+
+export interface MemSample {
+  total: number;
+  /** `total − available`, como o `free`. */
+  used: number;
+  available: number;
+  swap_total: number;
+  swap_used: number;
+  zram: Zram | null;
+  psi: Psi | null;
+}
+
+export type DiskKind = "nvme" | "sata" | "usb" | "mmc" | "virtual" | "other";
+
+export interface DiskIo {
+  name: string;
+  model: string | null;
+  kind: DiskKind;
+  rotational: boolean | null;
+  read_bps: number | null;
+  write_bps: number | null;
+  busy_pct: number | null;
+}
+
+export interface NetIface {
+  name: string;
+  wireless: boolean;
+  rx_bps: number | null;
+  tx_bps: number | null;
+}
+
+export interface NetSample {
+  rx_bps: number | null;
+  tx_bps: number | null;
+  /** Bytes desde a primeira amostra. */
+  rx_session: number;
+  tx_session: number;
+  /** Só interfaces físicas. */
+  interfaces: NetIface[];
+}
+
+export interface Sample {
+  /** ms desde o início da sessão (relógio monotônico). */
+  at_ms: number;
+  uptime_s: number;
+  cpu: CpuSample;
+  mem: MemSample;
+  /** Só discos físicos inteiros. */
+  disks: DiskIo[];
+  net: NetSample;
+}
+
+export interface SystemInfo {
+  cpu_model: string | null;
+  /** Núcleos físicos; `null` quando o sistema não informa. */
+  cores: number | null;
+  threads: number;
+  ram_total: number;
+  kernel: string | null;
+  distro: string | null;
+  hostname: string | null;
+}
+
+/** Ordem: `sample`* → `stopped` | `error`. */
+export type MonitorEvent =
+  | { kind: "sample"; sample: Sample }
+  | { kind: "stopped" }
+  | { kind: "error"; message: string };
+
+/** Uma amostra por segundo até o `stopMonitor` ou outro `startMonitor`. */
+export function startMonitor(onEvent: (event: MonitorEvent) => void): Promise<void> {
+  const channel = new Channel<MonitorEvent>();
+  channel.onmessage = onEvent;
+  return invoke("start_monitor", { onEvent: channel });
+}
+
+export function stopMonitor(): Promise<void> {
+  return invoke("stop_monitor");
+}
+
+export function systemInfo(): Promise<SystemInfo> {
+  return invoke("system_info");
+}

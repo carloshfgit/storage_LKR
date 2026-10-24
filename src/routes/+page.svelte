@@ -1,7 +1,8 @@
-<!-- Tela principal: disco, barra e legenda. Orquestra o scan e os seus estados. -->
+<!-- Tela principal: abas Armazenamento (disco, barra e legenda; orquestra o scan e os seus estados)
+     e Recursos (monitor em tempo real). -->
 <script lang="ts">
   import "$lib/theme.css";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import {
     CATEGORIES,
     cancelScan,
@@ -19,11 +20,46 @@
   import CategoryDetail from "$lib/CategoryDetail.svelte";
   import DockerDetail from "$lib/DockerDetail.svelte";
   import Legend from "$lib/Legend.svelte";
+  import ResourcesView from "$lib/ResourcesView.svelte";
   import StorageBar from "$lib/StorageBar.svelte";
   import SuggestionDetail from "$lib/SuggestionDetail.svelte";
   import Suggestions, { type SuggestionKind } from "$lib/Suggestions.svelte";
   import TrashCard from "$lib/TrashCard.svelte";
   import TrashDetail from "$lib/TrashDetail.svelte";
+  import TabSwitch, { type Tab } from "$lib/TabSwitch.svelte";
+
+  const TAB_KEY = "storage-looker.tab";
+
+  /** A aba escolhida volta na próxima abertura; o scan roda de qualquer jeito. */
+  function savedTab(): Tab {
+    try {
+      return localStorage.getItem(TAB_KEY) === "resources" ? "resources" : "storage";
+    } catch {
+      return "storage";
+    }
+  }
+
+  let tab = $state<Tab>(savedTab());
+  /** Rolagem de cada aba, para a troca não perder o lugar. */
+  const scrolls: Record<Tab, number> = { storage: 0, resources: 0 };
+
+  async function selectTab(next: Tab) {
+    if (next === tab) return;
+    scrolls[tab] = window.scrollY;
+    tab = next;
+    try {
+      localStorage.setItem(TAB_KEY, next);
+    } catch {
+      // Sem armazenamento local: só não lembra a aba.
+    }
+    await tick();
+    window.scrollTo(0, scrolls[next]);
+  }
+
+  /** Os detalhes escondidos continuam montados e ouvem o `Esc` na janela; na aba Recursos, ele não chega a eles. */
+  function onkeydowncapture(e: KeyboardEvent) {
+    if (tab === "resources" && e.key === "Escape") e.stopPropagation();
+  }
 
   type Phase = "idle" | "scanning" | "done" | "cancelled" | "error";
 
@@ -209,94 +245,105 @@
   const diskName = $derived(!disk ? "" : disk.mount === "/" ? "Disco do sistema" : disk.mount);
 </script>
 
+<svelte:window {onkeydowncapture} />
+
 <main>
-  {#if dockerView && result}
-    <div class="screen detail">
-      <DockerDetail mode={dockerView} {result} version={scanVersion} onback={() => (dockerOpen = null)} />
-    </div>
-  {:else if detail && result}
-    <div class="screen detail">
-      <CategoryDetail
-        segment={detail}
-        {result}
-        {dockerPending}
-        {total}
-        version={scanVersion}
-        onback={() => (selected = null)}
-        onupdate={update}
-        onopentrash={openTrash}
-        onopendocker={openDocker}
-      />
-    </div>
-  {:else if suggestionView && result}
-    <div class="screen detail">
-      <SuggestionDetail
-        kind={suggestionView}
-        {result}
-        version={scanVersion}
-        onback={() => (suggestion = null)}
-        onupdate={update}
-      />
-    </div>
-  {:else if trashView && result}
-    <div class="screen detail">
-      <TrashDetail {result} version={scanVersion} onback={() => (trashOpen = false)} onupdate={update} />
-    </div>
-  {/if}
+  <TabSwitch value={tab} onchange={selectTab} />
 
-  <!-- Escondida, não desmontada: a barra volta do detalhe sem refazer a animação. -->
-  <div class="screen home" hidden={!!detail || !!suggestionView || trashView}>
-    <header>
-      <h1>Armazenamento</h1>
-      {#if disk}
-        <p class="disk">{diskName}{#if disk.device}<span> · {disk.device}</span>{/if}</p>
-      {/if}
-    </header>
-
-    <section class="card">
-      <p class="usage">
-        {#if disk}
-          <strong>{formatBytes(used)}</strong> de {formatBytes(disk.total_bytes)} usados
-        {:else}
-          Lendo o disco…
-        {/if}
-      </p>
-
-      <StorageBar {segments} {free} {total} scanning={phase === "scanning" && !background} {onselect} />
-
-      <div class="status" aria-live="polite">
-        {#if phase === "scanning" && background && result}
-          <span class="spinner" aria-hidden="true"></span>
-          <span>Atualizando… {formatCount(liveFiles)} arquivos · análise de {formatRelativeDate(result.finished_at)}</span>
-          <button onclick={cancel}>Cancelar</button>
-        {:else if phase === "scanning"}
-          <span class="spinner" aria-hidden="true"></span>
-          <span>Escaneando… {formatCount(liveFiles)} arquivos</span>
-          <button onclick={cancel}>Cancelar</button>
-        {:else if phase === "done" && result}
-          <span>
-            {formatCount(result.files)} arquivos analisados em {formatSeconds(result.elapsed_ms)}
-            · {formatRelativeDate(result.finished_at)}
-          </span>
-          <button onclick={() => scan()}>Reescanear</button>
-        {:else if phase === "cancelled"}
-          <span>
-            Escaneamento cancelado{#if result} · mostrando a análise de {formatRelativeDate(result.finished_at)}{/if}
-          </span>
-          <button onclick={() => scan()}>Reescanear</button>
-        {:else if phase === "error"}
-          <span class="error">Erro: {errorMessage}</span>
-          <button onclick={() => scan()}>Tentar de novo</button>
-        {/if}
+  <!-- Escondida, não desmontada: a troca de aba mantém o detalhe aberto, a ordenação e a seleção. -->
+  <div class="tab" id="panel-storage" role="tabpanel" aria-labelledby="tab-storage" hidden={tab !== "storage"}>
+    {#if dockerView && result}
+      <div class="screen detail">
+        <DockerDetail mode={dockerView} {result} version={scanVersion} onback={() => (dockerOpen = null)} />
       </div>
-
-      <Legend {segments} {free} {total} {onselect} />
-    </section>
-
-    {#if result && !showLive}
-      <TrashCard {result} onselect={openTrash} />
-      <Suggestions {result} onselect={openSuggestion} />
+    {:else if detail && result}
+      <div class="screen detail">
+        <CategoryDetail
+          segment={detail}
+          {result}
+          {dockerPending}
+          {total}
+          version={scanVersion}
+          onback={() => (selected = null)}
+          onupdate={update}
+          onopentrash={openTrash}
+          onopendocker={openDocker}
+        />
+      </div>
+    {:else if suggestionView && result}
+      <div class="screen detail">
+        <SuggestionDetail
+          kind={suggestionView}
+          {result}
+          version={scanVersion}
+          onback={() => (suggestion = null)}
+          onupdate={update}
+        />
+      </div>
+    {:else if trashView && result}
+      <div class="screen detail">
+        <TrashDetail {result} version={scanVersion} onback={() => (trashOpen = false)} onupdate={update} />
+      </div>
     {/if}
+
+    <!-- Escondida, não desmontada: a barra volta do detalhe sem refazer a animação. -->
+    <div class="screen home" hidden={!!detail || !!suggestionView || trashView}>
+      <header>
+        <h1>Armazenamento</h1>
+        {#if disk}
+          <p class="disk">{diskName}{#if disk.device}<span> · {disk.device}</span>{/if}</p>
+        {/if}
+      </header>
+
+      <section class="card">
+        <p class="usage">
+          {#if disk}
+            <strong>{formatBytes(used)}</strong> de {formatBytes(disk.total_bytes)} usados
+          {:else}
+            Lendo o disco…
+          {/if}
+        </p>
+
+        <StorageBar {segments} {free} {total} scanning={phase === "scanning" && !background} {onselect} />
+
+        <div class="status" aria-live="polite">
+          {#if phase === "scanning" && background && result}
+            <span class="spinner" aria-hidden="true"></span>
+            <span>Atualizando… {formatCount(liveFiles)} arquivos · análise de {formatRelativeDate(result.finished_at)}</span>
+            <button onclick={cancel}>Cancelar</button>
+          {:else if phase === "scanning"}
+            <span class="spinner" aria-hidden="true"></span>
+            <span>Escaneando… {formatCount(liveFiles)} arquivos</span>
+            <button onclick={cancel}>Cancelar</button>
+          {:else if phase === "done" && result}
+            <span>
+              {formatCount(result.files)} arquivos analisados em {formatSeconds(result.elapsed_ms)}
+              · {formatRelativeDate(result.finished_at)}
+            </span>
+            <button onclick={() => scan()}>Reescanear</button>
+          {:else if phase === "cancelled"}
+            <span>
+              Escaneamento cancelado{#if result} · mostrando a análise de {formatRelativeDate(result.finished_at)}{/if}
+            </span>
+            <button onclick={() => scan()}>Reescanear</button>
+          {:else if phase === "error"}
+            <span class="error">Erro: {errorMessage}</span>
+            <button onclick={() => scan()}>Tentar de novo</button>
+          {/if}
+        </div>
+
+        <Legend {segments} {free} {total} {onselect} />
+      </section>
+
+      {#if result && !showLive}
+        <TrashCard {result} onselect={openTrash} />
+        <Suggestions {result} onselect={openSuggestion} />
+      {/if}
+    </div>
+  </div>
+
+  <div class="tab" id="panel-resources" role="tabpanel" aria-labelledby="tab-resources" hidden={tab !== "resources"}>
+    <ResourcesView active={tab === "resources"} />
   </div>
 </main>
 

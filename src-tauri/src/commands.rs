@@ -12,7 +12,8 @@ use tauri::State;
 use tauri::ipc::Channel;
 
 use crate::state::{
-    AppState, Cleanup, FileItem, PurgeReport, ScanEvent, TrashItem, TrashListing, TrashReport,
+    AppState, Cleanup, FileItem, MONITOR_INTERVAL, MonitorEvent, MonitorState, PurgeReport,
+    ScanEvent, TrashItem, TrashListing, TrashReport,
 };
 
 /// O app sempre mostra o disco do sistema.
@@ -49,6 +50,31 @@ pub fn start_scan(
 #[tauri::command]
 pub fn cancel_scan(state: State<'_, Arc<AppState>>) {
     state.cancel_scan();
+}
+
+/// Começa a mandar amostras de CPU, memória, disco e rede pelo Channel, uma por
+/// segundo, até o `stop_monitor` (a aba "Recursos" saiu da tela) ou outro
+/// `start_monitor`. Não é recusado durante um scan: só lê `/proc` e `/sys`.
+#[tauri::command]
+pub fn start_monitor(state: State<'_, Arc<MonitorState>>, on_event: Channel<MonitorEvent>) {
+    let mut sampler = monitor::Sampler::system();
+    state.start(
+        MONITOR_INTERVAL,
+        move || sampler.sample(),
+        // Falha se a janela fechou ou recarregou: a thread para sozinha.
+        move |event| on_event.send(event).is_ok(),
+    );
+}
+
+#[tauri::command]
+pub fn stop_monitor(state: State<'_, Arc<MonitorState>>) {
+    state.stop();
+}
+
+/// Ficha técnica (modelo da CPU, núcleos, RAM, kernel, distribuição).
+#[tauri::command]
+pub fn system_info() -> monitor::SystemInfo {
+    monitor::system_info(Path::new("/"))
 }
 
 /// Maiores arquivos da categoria no último scan, cada um dizendo se pode ir para a Lixeira.

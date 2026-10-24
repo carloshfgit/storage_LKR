@@ -126,16 +126,17 @@ Base do crate `monitor`, só com o que vem de `/proc` e é igual em qualquer má
 
 ## Etapa 16 — Ponte Tauri e aba "Recursos"
 Primeira versão visível: o seletor de abas e os cards da Etapa 15 com gráficos.
-- [ ] `src-tauri/src/state/monitor.rs`: `MonitorState { running: AtomicBool, generation: AtomicU64 }`, separado do `AppState` do scan (não divide lock com ele). `start(interval, sampler_factory, send)` sobe a thread; um novo `start` incrementa a `generation`, e a thread antiga para no próximo tick. A thread para sozinha se o `send` falhar (janela fechada ou recarregada).
-- [ ] Commands `start_monitor(on_event: Channel<MonitorEvent>)`, `stop_monitor()` e `system_info()` — os 4 passos do CLAUDE.md (`commands.rs`, `lib.rs`, `build.rs`, `capabilities/default.json`) + wrappers em `api.ts` com os tipos espelhados.
-- [ ] O monitor **não** é recusado durante um scan: é justamente quando ver o disco trabalhando interessa. A coleta não toca no disco escaneado (só `/proc` e `/sys`, que são memória).
-- [ ] **Pausa** (D46): a UI chama `start_monitor` ao mostrar a aba e `stop_monitor` ao sair dela, em `visibilitychange` (`hidden`) e ao minimizar (`onResized` + `isMinimized()`; conferir se o `core:default` já inclui `core:window:allow-is-minimized`). Perder o foco **não** pausa: o caso de uso é olhar o monitor enquanto outra janela faz a tarefa pesada.
-- [ ] `TabSwitch.svelte`: controle segmentado no topo, centralizado, estilo iOS (`role="tablist"`, setas do teclado). A aba Armazenamento fica escondida, não desmontada (a barra não refaz a animação, como na volta do detalhe). A aba escolhida é lembrada em `localStorage` (com `try/catch`), mas o app sempre abre escaneando.
-- [ ] `ResourcesView.svelte`: grade responsiva de cards (`grid-template-columns: repeat(auto-fill, minmax(…))`: 1 coluna na janela estreita, 2 ou 3 nas largas). Mini-barras por núcleo quebram em linhas, para caberem de 2 a 64 threads. SVG com `viewBox` e `vector-effect: non-scaling-stroke`, nítido em HiDPI. `MetricCard.svelte` (título, valor grande, subtítulo, gráfico) e `Sparkline.svelte`: SVG nativo, `<polyline>`/`<path>` com área preenchida, escala Y fixa para porcentagens e automática (com teto arredondado) para taxas; duas séries para leitura/gravação e download/upload (D48).
-- [ ] Cards desta etapa: **CPU** (total + mini-barras por núcleo + frequência), **Memória** (RAM com barra usada/total e swap/zRAM; selo "sob pressão" com PSI `avg10` > 10%), **Disco** (leitura/gravação por disco), **Rede** (download/upload + total da sessão).
-- [ ] `format.ts`: `formatRate` (B/s → kB/s → MB/s, decimal como o resto), `formatPercent` já existe, `formatMHz`, `formatTemp`, `formatDuration` (uptime e tempo de bateria).
-- [ ] `theme.css`: tokens `--res-cpu`, `--res-mem`, `--res-disk-read`, `--res-disk-write`, `--res-net-rx`, `--res-net-tx`, `--res-gpu`, nos dois temas.
-- [ ] Testes do `MonitorState` com `mpsc` e `Sampler` falso (como D24): ciclo `sample`* → `stopped`, `start` duplo (só a geração nova emite), parada quando o `send` falha.
+- [x] `src-tauri/src/state/monitor.rs`: `MonitorState { generation: Mutex<u64>, wake: Condvar }` (o `Condvar` faz o `stop` valer na hora, sem esperar o tick), separado do `AppState` do scan (não divide lock com ele). `start(interval, sampler_factory, send)` sobe a thread; um novo `start` incrementa a `generation`, e a thread antiga para no próximo tick. A thread para sozinha se o `send` falhar (janela fechada ou recarregada).
+- [x] `system_info` (adiantado da Etapa 17, sem GPUs nem discos): modelo da CPU (ou da placa ARM pelo devicetree), núcleos físicos, threads, RAM, kernel, distribuição e hostname, com testes de x86 com SMT, dois soquetes, ARM, container e `os-release` sem `PRETTY_NAME`.
+- [x] Commands `start_monitor(on_event: Channel<MonitorEvent>)`, `stop_monitor()` e `system_info()` — os 4 passos do CLAUDE.md (`commands.rs`, `lib.rs`, `build.rs`, `capabilities/default.json`) + wrappers em `api.ts` com os tipos espelhados.
+- [x] O monitor **não** é recusado durante um scan: é justamente quando ver o disco trabalhando interessa. A coleta não toca no disco escaneado (só `/proc` e `/sys`, que são memória).
+- [x] **Pausa** (D46): a UI chama `start_monitor` ao mostrar a aba e `stop_monitor` ao sair dela, em `visibilitychange` (`hidden`) e ao minimizar (`onResized` + `isMinimized()`; e também a cada `onFocusChanged`; o `core:default` já inclui `core:window:allow-is-minimized`). Perder o foco **não** pausa: o caso de uso é olhar o monitor enquanto outra janela faz a tarefa pesada.
+- [x] `TabSwitch.svelte`: controle segmentado no topo, centralizado, estilo iOS (`role="tablist"`, setas do teclado). A aba Armazenamento fica escondida, não desmontada (a barra não refaz a animação, como na volta do detalhe). A aba escolhida é lembrada em `localStorage` (com `try/catch`), mas o app sempre abre escaneando.
+- [x] `ResourcesView.svelte`: grade responsiva de cards (`grid-template-columns: repeat(auto-fill, minmax(…))`: 1 coluna na janela estreita, 2 ou 3 nas largas). Mini-barras por núcleo quebram em linhas, para caberem de 2 a 64 threads. SVG com `viewBox` e `vector-effect: non-scaling-stroke`, nítido em HiDPI. `MetricCard.svelte` (título, valor grande, subtítulo, gráfico) e `Sparkline.svelte`: SVG nativo, `<polyline>`/`<path>` com área preenchida, escala Y fixa para porcentagens e automática (com teto arredondado) para taxas; duas séries para leitura/gravação e download/upload (D48).
+- [x] Cards desta etapa: **CPU** (total + mini-barras por núcleo + frequência), **Memória** (RAM com barra usada/total e swap/zRAM; selo "sob pressão" com PSI `avg10` > 10%), **Disco** (leitura/gravação por disco), **Rede** (download/upload + total da sessão).
+- [x] `format.ts`: `formatRate` (B/s → kB/s → MB/s, decimal como o resto), `formatPercent` já existe, `formatMHz`, `formatTemp`, `formatDuration` (uptime e tempo de bateria).
+- [x] `theme.css`: tokens `--res-cpu`, `--res-mem`, `--res-disk-read`, `--res-disk-write`, `--res-net-rx`, `--res-net-tx`, `--res-gpu`, nos dois temas.
+- [x] Testes do `MonitorState` com `mpsc` e `Sampler` falso (como D24): ciclo `sample`* → `stopped`, `start` duplo (só a geração nova emite), parada quando o `send` falha.
 
 **Pronto quando:**
 - Trocar de aba não perde o estado do armazenamento (detalhe aberto, ordenação, seleção).
@@ -144,7 +145,23 @@ Primeira versão visível: o seletor de abas e os cards da Etapa 15 com gráfico
 - A aba funciona em 1366×768 sem rolagem horizontal, e em HiDPI (escala 200%) os gráficos ficam nítidos.
 - A pausa ao minimizar foi conferida em X11 e em Wayland (GNOME); a limitação, se houver, está documentada.
 
-**Resultado:** _a preencher._
+**Resultado (23/10/2026):**
+
+| Medida (app + WebKit, % de um núcleo) | Valor |
+|---|---|
+| Aba Armazenamento, scan concluído | 0,1–0,2% (o monitor não roda) |
+| Aba Recursos, `tauri dev` | ~5,5% (Rust ~1%, WebKit ~4,5%) |
+| Aba Recursos, build de release | **~4%** (Rust 0,8–1,0%, WebKit 2,8–4,2%), em três medições de 30 s |
+
+- Workspace: 138 testes passando (12 novos: 6 do ciclo do `MonitorState` e 6 da ficha técnica), clippy limpo, `npm run check` sem erros.
+- Os eventos chegam a 1 Hz, numa sessão só, e a troca de aba para a coleta (a thread sai e o app volta a 0,1–0,2%).
+- ⚠️ **Meta de 2% não atingida.** O release fica em cerca de 4%, e o custo está na repintura do WebKitGTK, não na coleta: o Rust inteiro (com a thread do monitor) fica abaixo de 1%. Desligar todos os gráficos SVG não mudou o custo além do ruído, nem isolar a pintura dos cards com `contain: content`. Fica para a Etapa 20 (D51): medir em outra máquina, testar a composição acelerada do WebKitGTK e decidir entre otimizar e ajustar a meta.
+- Medir logo depois de recarregar a página engana: cada carga começa um scan em segundo plano (walk + Docker), que domina os primeiros 30–40 s.
+- ⏳ **Falta a conferência visual**, que precisa ser feita por você:
+  1. Abrir "Recursos": os quatro cards se mexem a cada segundo, e os números batem com o `target/release/monitor`.
+  2. Com um detalhe aberto no Armazenamento (ordenação e seleção feitas), ir a Recursos e voltar: está tudo igual. Na aba Recursos, o `Esc` não fecha o detalhe escondido.
+  3. Minimizar com a aba Recursos aberta e conferir, pelo `top -p $(pgrep -x storage-looker)`, que o app para; restaurar e ver o gráfico recomeçar. Conferir no Wayland e, se possível, numa sessão X11.
+  4. Janela no mínimo (560 px): 1 coluna, sem rolagem horizontal. Escala de 200%: gráficos e mini-barras nítidos.
 
 ---
 
@@ -153,7 +170,7 @@ Tudo que depende de `/sys/class/hwmon`, `/sys/class/power_supply` e varia de má
 - [ ] `sensors.rs`: varre `/sys/class/hwmon/hwmon*` uma vez (no `Sampler::new`) e guarda os arquivos de cada sensor; depois só lê `temp*_input`. Ordem de preferência para a **CPU**: `coretemp` (`Package id 0`), `k10temp` (`Tctl`/`Tdie`), `zenpower`, `cpu_thermal` (ARM); sem nenhum, a `thermal_zone` do tipo `x86_pkg_temp`. `acpitz` só como último recurso, marcado como aproximado.
 - [ ] Temperatura do **disco**: `nvme` (hwmon ligado a `/sys/block/nvmeXnY/device`) e `drivetemp` (SATA, liga o hwmon ao disco pelo `device`). SATA sem o módulo: "—" com a dica `sudo modprobe drivetemp` (o app só mostra o comando, D44). eMMC, cartão SD, USB e disco de VM: "—" sem dica (não há sensor).
 - [ ] `battery.rs`: **todas** as `/sys/class/power_supply/*` com `type = Battery` e `scope` diferente de `Device` (fora mouse e fone Bluetooth). Aceita os nomes `BAT*`, `CMB*` e outros: o filtro é o `type`, não o nome. Aceita os dois formatos: `energy_*` (µWh) + `power_now`, ou `charge_*` (µAh) + `current_now` × `voltage_now` (convertido para µWh com `voltage_min_design`, ou `voltage_now` sem ele). Saúde = `full / full_design`; tempo restante = energia restante / potência (descarregando) ou faltante / potência (carregando), escondido com potência ≈ 0 ou nos primeiros 10 s (valor instável). Ciclos de `cycle_count` quando ≠ 0. Com mais de uma bateria (ThinkPad com interna + externa), `battery_total` soma energia e potência, e o nível é ponderado pela energia de cada uma, como o UPower.
-- [ ] `system_info()`: modelo da CPU (`/proc/cpuinfo` `model name`, ou `/sys/firmware/devicetree/base/model`), núcleos físicos e threads, RAM total, kernel (`uname`), distro (`/etc/os-release` `PRETTY_NAME`), hostname, discos (modelo, tamanho, SSD/HD por `queue/rotational`, NVMe/SATA), GPUs (da Etapa 18).
+- [ ] `system_info()` (a base já existe desde a Etapa 16; falta acrescentar discos e GPUs): modelo da CPU (`/proc/cpuinfo` `model name`, ou `/sys/firmware/devicetree/base/model`), núcleos físicos e threads, RAM total, kernel (`uname`), distro (`/etc/os-release` `PRETTY_NAME`), hostname, discos (modelo, tamanho, SSD/HD por `queue/rotational`, NVMe/SATA), GPUs (da Etapa 18).
 - [ ] UI: temperatura nos cards de CPU e Disco (cor muda acima de um limiar do próprio sensor: `temp*_crit` ou `temp*_max` quando existirem, senão 85 °C para CPU e 70 °C para disco); card **Bateria** (só com bateria: nível total com barra, estado em pt-BR, potência em W, tempo restante; saúde e ciclos de cada bateria, uma linha por bateria quando houver mais de uma); card **Ficha técnica** (lista chave/valor, uptime atualizado a cada amostra).
 - [ ] Testes com árvores falsas de `sys/`: `coretemp` com vários núcleos, só `k10temp`, só `acpitz`, sem nenhum sensor; `cpu_thermal` (ARM); NVMe com hwmon, SATA com e sem `drivetemp`, eMMC; bateria `energy_*` e `charge_*`, carregando, descarregando, `full_design` ausente, `BAT0` + `BAT1`, mouse Bluetooth ignorado; `/etc/os-release` sem `PRETTY_NAME`.
 

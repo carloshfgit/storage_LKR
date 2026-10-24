@@ -6,6 +6,7 @@
 
 mod cpu;
 mod disk_io;
+mod info;
 mod mem;
 mod model;
 mod net;
@@ -14,6 +15,7 @@ mod sampler;
 #[cfg(test)]
 mod fixture;
 
+pub use info::{SystemInfo, system_info};
 pub use model::{
     CoreSample, CpuSample, DiskIo, DiskKind, MemSample, NetIface, NetSample, Psi, Sample, Zram,
 };

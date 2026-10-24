@@ -76,3 +76,30 @@ export function formatRelativeDate(unixSeconds: number, now = Date.now()): strin
   }
   return relative.format(Math.round(value), unit);
 }
+
+/** Bytes por segundo: "12,4 MB/s", "0 B/s". */
+export function formatRate(bytesPerSecond: number): string {
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+/** "800 MHz", "2,40 GHz". */
+export function formatMHz(mhz: number): string {
+  if (mhz < 1000) return `${Math.round(mhz)} MHz`;
+  return `${fixed(2).format(mhz / 1000)} GHz`;
+}
+
+/** "52 °C". */
+export function formatTemp(celsius: number): string {
+  return `${Math.round(celsius)} °C`;
+}
+
+/** Segundos → "3 d 4 h", "2 h 15 min", "45 min", "< 1 min". */
+export function formatDuration(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 1) return "< 1 min";
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `${days} d ${hours % 24} h`;
+  if (hours > 0) return `${hours} h ${minutes % 60} min`;
+  return `${minutes} min`;
+}

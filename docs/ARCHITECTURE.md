@@ -289,8 +289,11 @@ pub struct DockerUsage { images: DockerItem, containers: DockerItem, volumes: Do
 | `reveal` | `(path: PathBuf) -> ()` | Só arquivos (e itens de cache) do último scan (`AppState::contains_file`) ou o caminho guardado de um item que está na Lixeira agora, depois `tauri_plugin_opener::reveal_item_in_dir` (D-Bus `FileManager1.ShowItems` → Nautilus com o arquivo selecionado). `async`, porque a chamada D-Bus bloqueia |
 | `docker_details` | `(mode: DockerMode) -> DockerDetails` | Só leitura: `scanner::docker_details` no socket fixo de `mode` (§6.1), com o timeout de 20 s. Erro se o daemon não responder. Não passa pelo `AppState` |
 | `docker_prune` | `(mode: DockerMode, target: DockerTarget, confirm: bool) -> Cleanup` | `DockerTarget` = `BuildCache` \| `UnusedImages`. Recusa um `mode` sem daemon no último resultado. Roda o comando fixo no socket de `mode`, sem timeout (um prune grande leva minutos), relê só aquele daemon e devolve como o `empty_trash` |
+| `start_monitor` | `(on_event: Channel<MonitorEvent>) -> ()` | Aba Recursos (§11). Sobe a thread do `MonitorState` com um `Sampler` novo: uma `Sample` por segundo até o `stop_monitor` ou outro `start_monitor`. Não é recusado durante um scan |
+| `stop_monitor` | `() -> ()` | Encerra a sessão na hora (a thread não espera o tick) |
+| `system_info` | `() -> SystemInfo` | Ficha técnica: modelo da CPU, núcleos, threads, RAM, kernel, distribuição e hostname |
 
-Status: todos ✅. `disk_info`, `start_scan`, `cancel_scan` e `category_files` na Etapa 3, `reveal` na 5, as ações de limpeza na 6, as sugestões (`old_downloads`, `largest_files`, `trash_caches`) na 10 os itens da Lixeira (`trash_items`, `restore_from_trash`, `purge_from_trash`) na 12 e o `docker_details` na 13. Os commands que tocam no disco são `async`, para não travar a janela.
+Status: todos ✅. `disk_info`, `start_scan`, `cancel_scan` e `category_files` na Etapa 3, `reveal` na 5, as ações de limpeza na 6, as sugestões (`old_downloads`, `largest_files`, `trash_caches`) na 10 os itens da Lixeira (`trash_items`, `restore_from_trash`, `purge_from_trash`) na 12 o `docker_details` na 13 e os do monitor (`start_monitor`, `stop_monitor`, `system_info`) na 16. Os commands que tocam no disco são `async`, para não travar a janela.
 
 ```rust
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -350,7 +353,7 @@ AppState { last: Mutex<Option<ScanResult>>, cancel: Arc<AtomicBool>, running: At
 
 | Componente | Responsabilidade |
 |---|---|
-| `routes/+page.svelte` | Orquestra o estado (`idle` / `scanning` / `done` / `cancelled` / `error`), monta os segmentos e alterna entre a tela principal e o detalhe. A tela principal fica escondida, não desmontada, para a barra não refazer a animação na volta. Escaneia ao abrir |
+| `routes/+page.svelte` | Abas Armazenamento e Recursos (`TabSwitch`): a de fora fica escondida, não desmontada, e o `Esc` na aba Recursos não chega aos detalhes escondidos (captura na janela). A aba escolhida fica no `localStorage`. Orquestra o estado (`idle` / `scanning` / `done` / `cancelled` / `error`), monta os segmentos e alterna entre a tela principal e o detalhe. A tela principal fica escondida, não desmontada, para a barra não refazer a animação na volta. Escaneia ao abrir |
 | `StorageBar.svelte` | Barra única, em ordem fixa: as 6 categorias, a faixa "ainda não contado" e "Livre" na ponta direita. Cada largura é um `Tween` (600 ms, `cubicOut`) redirecionado a cada `progress`. Vãos de 2px com a cor do card separam os segmentos. Clicar num segmento abre o detalhe. Hover ou foco mostra um tooltip com nome, tamanho e porcentagem, inclusive em "Livre" |
 | `Legend.svelte` | Linhas com bolinha de cor, nome, tamanho e porcentagem do disco, ordenadas por bytes (`animate:flip`) e com "Livre" por último. Apps/Sistema traz a composição: Docker e reservado/sem acesso |
 | `CategoryDetail.svelte` | Aberto ao clicar num segmento da barra ou numa linha da legenda (só com um resultado completo). Mostra o total, a porcentagem e a contagem, e lista o top-N de `category_files`, ordenado por tamanho ou por data. Em Outros aparece o card "Lixeira", com "Ver itens" (abre o `TrashDetail`); em Apps/Sistema, um card por daemon, "Docker" e "Docker rootless" (imagens, containers, volumes e build cache, cada um com tamanho, quantidade e liberável; some sem aquele daemon) e "Reservado / sem acesso". Voltar: botão ou `Esc`. Checkbox nos arquivos com `trashable`, barra fixa no rodapé com o total selecionado e "Mover para a Lixeira". Card Lixeira com "Esvaziar Lixeira"; cada card Docker com "Ver detalhes" (abre o `DockerDetail`), "Limpar build cache" e "Remover imagens não usadas" do seu daemon, sem botão para volumes. As ações destrutivas passam pelo `ConfirmDialog`, com o tamanho no título. O resultado aparece num aviso: o que foi movido ou liberado, e os recusados com o motivo |
@@ -363,6 +366,10 @@ AppState { last: Mutex<Option<ScanResult>>, cancel: Arc<AtomicBool>, running: At
 | `SuggestionDetail.svelte` | Mesma navegação do `CategoryDetail` (voltar, `Esc`, avisos, rodapé de seleção). Downloads antigos e maiores arquivos usam `FileRow` e `move_to_trash`. Caches listam pastas (nome, `~/.cache/…`, arquivos, tamanho, "abrir na pasta"), e "Mover para a Lixeira" pede confirmação no `ConfirmDialog` antes do `trash_caches` |
 | `TrashCard.svelte` | Card "Lixeira" na tela principal, entre a barra e as sugestões: `trash_bytes` e a contagem de `trash_items`. Vazia, mostra "Lixeira vazia" e não abre nada. Clicar abre o `TrashDetail` |
 | `TrashDetail.svelte` | Mesma navegação do `CategoryDetail`. Lista `trash_items()` (recarregada a cada ação e a cada scan): nome, pasta original (`~/…`), arquivos (se for pasta), tamanho e "apagado há X", ordenável por tamanho ou por data, com "abrir na pasta" no caminho guardado. Um tamanho medido agora (fora do scan) aparece com `*` e uma nota. "Esvaziar Lixeira" no topo (reaproveita o `empty_trash`); no rodapé da seleção, "Restaurar" e "Apagar", este pelo `ConfirmDialog` com o tamanho no título. Itens com `blocked` ganham o selo "travado", e um card recolhido (`<details>`) acima da lista convida a abrir e mostra cada um com o motivo e os comandos. O "Esvaziar Lixeira" avisa na confirmação que eles vão ficar. Os recusados de qualquer ação aparecem no aviso com os comandos, quando houver |
+| `TabSwitch.svelte` | Controle segmentado centralizado no topo (Armazenamento \| Recursos), estilo iOS: o fundo desliza para a aba escolhida. `role="tablist"`, setas, Home e End |
+| `ResourcesView.svelte` | Aba Recursos (§11): dona do ciclo do monitor e do histórico de 60 amostras. Cards Processador, Memória, Disco e Rede em grade (`auto-fill`, 1 ou 2 colunas) |
+| `MetricCard.svelte` | Card da aba Recursos: título, selo opcional, valor grande, subtítulo e o conteúdo |
+| `Sparkline.svelte` | Gráfico de linha em SVG puro dos últimos 60 pontos, uma ou duas séries, com área. Escala fixa (`max`) ou automática com teto 1/2/5 × 10ⁿ e mínimo `floor`. `viewBox` distorcido com `vector-effect: non-scaling-stroke`: traço nítido em qualquer largura e em HiDPI |
 | `api.ts` | `startScan(onEvent)` com `new Channel<ScanEvent>()` e wrappers tipados |
 | `categories.ts` | Nome (espelha `Category::label`) e token de cor de cada categoria, mais o tipo `Segment` usado pela barra e pela legenda |
 | `format.ts` | Unidades decimais (1 GB = 10⁹ B, como GNOME/iOS) com 3 algarismos significativos e casas fixas, porcentagem, contagem e segundos, tudo via `Intl.NumberFormat('pt-BR')` |
@@ -438,4 +445,30 @@ Plano em [PLAN-V2.md](PLAN-V2.md). O crate `crates/monitor` é Rust puro, sem Ta
 | Uptime | `/proc/uptime` | Primeiro campo |
 
 **CLI (`bin/monitor.rs`):** `monitor` imprime uma linha por segundo até o Ctrl+C. `--interval MS`, `--count N` (no fim, o custo médio e o pior de uma amostra e a CPU do próprio processo), `--once` (uma amostra com taxas), `--json` (uma `Sample` por linha) e `--cores` (uso por núcleo).
+
+**Ponte (Etapa 16, `src-tauri/src/state/monitor.rs`):**
+- `MonitorState { generation: Mutex<u64>, wake: Condvar }`, gerenciado como `Arc` à parte do `AppState`: não divide lock com o scan e roda durante ele.
+- `start(interval, sample, send)` incrementa a geração e sobe uma thread. A primeira amostra sai na hora (sem taxas) e as outras a cada `interval`, numa cadência fixa que não acumula atraso. Entre os ticks, a thread espera no `Condvar` enquanto a geração for a dela: `stop()` ou outro `start()` incrementam a geração, acordam a thread, e ela emite `stopped` e sai na hora.
+- `send` devolve `false` quando o `Channel` falha (janela fechada ou recarregada), e a thread sai sem esperar um `stop`. Um erro do `Sampler` (sem `/proc/stat`) vira `error` e encerra a sessão.
+- A amostra e o destino são parâmetros: os testes usam um amostrador falso e um `mpsc`, como o scan (D24).
+
+```rust
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum MonitorEvent {
+    Sample { sample: Box<Sample> },
+    Stopped,
+    Error { message: String },
+}
+```
+
+**Interface (`ResourcesView.svelte`):**
+- Coleta só quando a aba está ativa, a página visível (`visibilitychange`) e a janela não minimizada (`isMinimized()`, conferido a cada `onResized` e `onFocusChanged`, porque o WebKitGTK nem sempre marca a página como oculta ao minimizar). Perder o foco não pausa (D46).
+- Um `$effect` sobre essas três condições chama `startMonitor` e, ao sair, `stopMonitor`. Cada sessão tem um id; eventos de uma sessão antiga são ignorados.
+- O histórico é um anel de 60 amostras no frontend e recomeça a cada sessão (D47).
+- Cards:
+  - **Processador:** uso total, modelo, núcleos, threads e frequência média; gráfico de 0 a 100% e uma mini-barra por thread, que quebram em linhas (de 2 a 64 threads).
+  - **Memória:** usada, total e %; gráfico de 0 a 100%; disponível, swap (ou "sem swap") e zRAM com a taxa de compressão. Selo "Sob pressão" com PSI `some avg10` acima de 10%.
+  - **Disco:** leitura e gravação somadas dos discos físicos, num gráfico com escala automática (mínimo 1 MB/s); por disco, modelo, nome, tipo, SSD/HD, taxas e % ocupado.
+  - **Rede:** download e upload num gráfico (mínimo 100 kB/s), o total desde que a aba abriu e cada interface (Wi-Fi ou cabo).
+- O cabeçalho mostra hostname, distribuição e há quanto tempo a máquina está ligada.
 

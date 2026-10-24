@@ -12,6 +12,16 @@
   --track: #e5e5ea;
   --track-stripe: #d1d1d6;
 
+  /* Aba Recursos: uma cor por série dos gráficos. */
+  --res-cpu: #007aff;
+  --res-mem: #34c759;
+  --res-disk-read: #32ade6;
+  --res-disk-write: #ff9500;
+  --res-net-rx: #5856d6;
+  --res-net-tx: #ff2d55;
+  --res-gpu: #af52de;
+  --warning: #ff9500;
+
   --bg: #f2f2f7;
   --surface: #ffffff;
   --text: #1c1c1e;
@@ -33,6 +43,15 @@
   :root {
     --track: #3a3a3c;
     --track-stripe: #48484a;
+
+    --res-cpu: #0a84ff;
+    --res-mem: #30d158;
+    --res-disk-read: #64d2ff;
+    --res-disk-write: #ff9f0a;
+    --res-net-rx: #5e5ce6;
+    --res-net-tx: #ff375f;
+    --res-gpu: #bf5af2;
+    --warning: #ff9f0a;
 
     --bg: #000000;
     --surface: #1c1c1e;

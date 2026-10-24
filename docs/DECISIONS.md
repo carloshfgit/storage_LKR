@@ -52,6 +52,9 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D43](#d43) | CSS dos componentes injetado pelo JS no dev | ✅ | 13 |
 | [D44](#d44) | Esvaziar a Lixeira item por item; itens travados com comandos para o terminal | ✅ | 14 |
 | [D45](#d45) | Monitor num crate próprio, lendo `/proc` e `/sys` direto | ✅ | 15 |
+| [D46](#d46) | Monitor só com a aba Recursos visível; perder o foco não pausa | ✅ | 16 |
+| [D47](#d47) | Histórico de 60 amostras só no frontend | ✅ | 16 |
+| [D48](#d48) | Gráficos em SVG puro, sem biblioteca | ✅ | 16 |
 
 ---
 
@@ -626,4 +629,48 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 **Limitações:**
 - Num disco com LUKS ou LVM, o card mostra o disco físico, não o volume.
 - O tráfego de VPN aparece só pela interface física, já cifrado (um pouco maior que o tráfego útil).
+
+### D46 — Monitor só com a aba Recursos visível; perder o foco não pausa <a id="d46"></a>
+**Decisão:**
+- A coleta roda só enquanto a aba Recursos está ativa, a página está visível (`visibilitychange`) e a janela não está minimizada (`isMinimized()`, conferido a cada `onResized` e `onFocusChanged`). Sem as três condições, a UI chama `stop_monitor`, e a thread sai na hora.
+- Perder o foco **não** pausa.
+- O backend também para sozinho se o `Channel` falhar (janela fechada ou recarregada), sem depender da UI.
+- O monitor tem um estado próprio (`MonitorState`), sem lock em comum com o scan, e não é recusado durante um scan.
+
+**Por quê:**
+- A ideia pede impacto próximo de zero: com a aba fechada, o app não deve acordar a CPU a cada segundo. Medido com a aba Armazenamento e o scan concluído: 0,1% a 0,2% de um núcleo (app + WebKit).
+- O caso de uso principal é ver o computador trabalhar enquanto outra janela faz a tarefa pesada. Pausar ao perder o foco esconderia justamente isso.
+- O `isMinimized()` complementa o `visibilitychange` porque o WebKitGTK nem sempre marca a página como oculta ao minimizar.
+- Durante um scan é quando o gráfico de disco mais interessa. A coleta só lê `/proc` e `/sys`, que ficam em memória, e não disputa o disco com o walk.
+
+**Descartado:**
+- Coleta contínua com o histórico no backend: gastaria CPU e bateria com a aba fechada.
+- Pausar no `blur`: quebraria o caso de uso acima.
+- Um `start` por amostra (a UI pedindo cada uma): mais idas e voltas pelo IPC, e o ritmo dependeria do timer do WebKit, que atrasa em segundo plano.
+
+**Limitações:**
+- No Wayland, minimizar pode não gerar `onResized`. Nesse caso, a pausa depende do `onFocusChanged` (minimizar tira o foco) e do `visibilitychange`.
+
+### D47 — Histórico de 60 amostras só no frontend <a id="d47"></a>
+**Decisão:** o backend não guarda série. A UI mantém as últimas 60 amostras (1 min a 1 Hz), e cada sessão (voltar à aba, restaurar a janela) recomeça o gráfico. O total de rede "desde que a aba abriu" também recomeça.
+
+**Por quê:** guardar a série no backend exigiria coletar com a aba fechada (contra a D46). Um minuto de dados não vale ir para o cache em disco.
+
+**Descartado:**
+- Anel no backend sempre ativo: contraria a D46.
+- Anel no backend só durante a sessão, devolvido ao reabrir: a sessão acaba justamente quando a aba some, então não haveria o que devolver.
+
+### D48 — Gráficos em SVG puro, sem biblioteca <a id="d48"></a>
+**Decisão:**
+- `Sparkline.svelte` desenha cada série como `<path>` (linha + área) num `viewBox` de 60 × 100 com `preserveAspectRatio="none"`. O traço usa `vector-effect: non-scaling-stroke`.
+- Escala fixa para porcentagens. Para taxas, a escala é automática, com teto 1/2/5 × 10ⁿ e um mínimo, para o ruído de um disco parado não encher o gráfico.
+
+**Por quê:**
+- São no máximo 8 séries de 60 pontos. O SVG herda as cores do tema (claro e escuro) e é acessível (`role="img"` com `aria-label`). Também não acrescenta dependência.
+- O `viewBox` distorcido estica o gráfico para qualquer largura, e o `non-scaling-stroke` mantém o traço com a mesma espessura e nítido em HiDPI.
+- Medido no `tauri dev`: desligar todos os gráficos não mudou o custo da aba além do ruído da medição.
+
+**Descartado:**
+- `uPlot` (Canvas, ~45 kB): mais rápido com milhares de pontos, mas aqui não há milhares. As cores teriam de ser lidas do CSS em JS e redesenhadas na troca de tema.
+- Canvas próprio: nitidez em HiDPI (`devicePixelRatio`) e acessibilidade ficariam por nossa conta.
 
