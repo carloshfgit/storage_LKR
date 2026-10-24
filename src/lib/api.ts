@@ -393,31 +393,6 @@ export interface NetSample {
   interfaces: NetIface[];
 }
 
-export type BatteryStatus = "charging" | "discharging" | "full" | "not_charging" | "unknown";
-
-export interface BatterySample {
-  name: string;
-  model: string | null;
-  pct: number | null;
-  status: BatteryStatus;
-  energy_now_wh: number | null;
-  energy_full_wh: number | null;
-  energy_full_design_wh: number | null;
-  power_w: number | null;
-  /** Capacidade atual / de fábrica, em %. */
-  health_pct: number | null;
-  cycles: number | null;
-}
-
-export interface BatteryTotal {
-  /** Ponderado pela energia de cada bateria. */
-  pct: number | null;
-  status: BatteryStatus;
-  power_w: number | null;
-  /** Até esvaziar ou até encher; `null` nos primeiros segundos e na tomada. */
-  time_left_s: number | null;
-}
-
 export type GpuVendor = "amd" | "nvidia" | "intel" | "other";
 
 /** `suspended`: desligada pelo kernel para economizar; não é lida, para não acordar. */
@@ -490,8 +465,6 @@ export interface Sample {
   disks: DiskIo[];
   net: NetSample;
   /** Vazio no desktop. */
-  batteries: BatterySample[];
-  battery_total: BatteryTotal | null;
   /** Uma por placa; vazio sem GPU. */
   gpus: GpuSample[];
   /** A cada 2 amostras; `null` nas outras. */

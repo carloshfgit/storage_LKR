@@ -4,9 +4,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use crate::battery;
 use crate::cpu::{self, CpuStat};
 use crate::disk_io::{self, DiskMeta, DiskStat, SECTOR};
 use crate::gpu::Gpus;
@@ -15,10 +14,6 @@ use crate::model::{DiskIo, NetIface, NetSample, Sample};
 use crate::net::{self, IfaceStat, counter_delta};
 use crate::procs::Procs;
 use crate::sensors::{self, TempSensor};
-
-/// O tempo restante da bateria só aparece depois disso: a potência das
-/// primeiras leituras oscila (o firmware atualiza a cada poucos segundos).
-const BATTERY_SETTLE: Duration = Duration::from_secs(10);
 
 /// Os processos são lidos a cada tantas amostras (a primeira inclusive): é a
 /// leitura mais cara, e a lista não precisa mudar a cada segundo.
@@ -229,9 +224,6 @@ impl Sampler {
             disks: disk_now,
             net: net_now,
         });
-        let batteries = battery::batteries(&root);
-        let settled = now.saturating_duration_since(self.start) >= BATTERY_SETTLE;
-        let battery_total = battery::total(&batteries, settled);
         let gpus = self
             .gpus
             .get_or_insert_with(|| Gpus::discover(&root))
@@ -249,8 +241,6 @@ impl Sampler {
             mem,
             disks,
             net,
-            batteries,
-            battery_total,
             gpus,
             procs,
         })

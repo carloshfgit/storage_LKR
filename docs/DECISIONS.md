@@ -57,9 +57,10 @@ Cada decisão tem o que foi decidido, o porquê e o que foi descartado. Quando h
 | [D48](#d48) | Gráficos em SVG puro, sem biblioteca | ✅ | 16 |
 | [D49](#d49) | GPU por fabricante; nunca acordar a dedicada suspensa | ✅ | 18 |
 | [D50](#d50) | "Top 5" processos agrupados por aplicativo, só leitura | ✅ | 19 |
-| [D53](#d53) | Sensores e bateria: escolha do sensor, limiar e as contas do UPower | ✅ | 17 |
+| [D53](#d53) | Sensores e bateria: escolha do sensor, limiar e as contas do UPower (bateria removida na D56) | ✅ | 17 |
 | [D54](#d54) | Swap em disco pelo `/proc/swaps`, separado do zRAM | ✅ | 15 (revisão) |
 | [D55](#d55) | Fonte da frequência decidida uma vez; o `cpu MHz` da VM é nominal | ✅ | 15 (revisão) |
+| [D56](#d56) | Sem card de bateria; a ficha técnica ocupa a linha inteira | ✅ | 19 (revisão) |
 
 ---
 
@@ -746,6 +747,8 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 - Apps em Flatpak ficam com o nome do executável: o `Exec` é `flatpak run`, e o processo roda com caminhos de dentro do sandbox.
 
 ### D53 — Sensores e bateria: escolha do sensor, limiar e as contas do UPower <a id="d53"></a>
+> A parte da bateria saiu do app na revisão da Etapa 19 (D56). Fica registrada caso volte.
+
 (D51 e D52 estão reservadas no PLAN-V2 para as metas de custo e a compatibilidade.)
 
 **Decisão:**
@@ -803,3 +806,22 @@ O app em desenvolvimento passa a se comportar como o real, e o build incremental
 
 **Limitações:**
 - Uma máquina física sem `cpufreq` (driver desligado no boot, `intel_pstate=disable` sem `acpi-cpufreq`) também fica sem frequência no card, e o `cpu MHz` aparece como nominal na ficha, embora ali ele varie.
+
+### D56 — Sem card de bateria; a ficha técnica ocupa a linha inteira <a id="d56"></a>
+**Decisão:**
+- O card Bateria saiu da aba Recursos, e o `battery.rs` saiu do crate `monitor`: a amostra não lê mais `/sys/class/power_supply`, e a `Sample` não tem mais `batteries`/`battery_total`.
+- A ficha técnica ocupa a linha inteira do grid (`MetricCard` com `wide`: `grid-column: 1 / -1`), com as linhas em duas colunas quando cabem (cada uma com no mínimo 280 px). Na janela estreita, continua uma coluna só.
+
+**Por quê:**
+- A bateria era o maior custo do coletor fora os processos. No Dell, cada leitura passa pelo EC/ACPI (o `BAT0/present` leva de 6 a 17 ms), e a amostra sem processos ia de ~1 ms para 20–30 ms. Sem ela, a mesma medida dá 2,1 ms, e o coletor inteiro a 1 Hz cai de 1,67% para 0,70% de um núcleo (`monitor --count 30`, com processos).
+- O GNOME já mostra nível, tempo restante e saúde da bateria (Configurações › Energia, `upower`). O card repetia isso a um custo que a aba existe para mostrar.
+- Sem o card, a ficha técnica era o único card numa linha incompleta. Na largura toda, as linhas curtas (memória, kernel, tempo ligado) deixam de ocupar uma coluna estreita e alta.
+
+**Descartado:**
+- Ler a bateria a cada 5–10 s (o plano da Etapa 20): reduz o custo, mas mantém um card que duplica o sistema.
+- Deixar a ficha técnica em uma coluna: com 6 ou 7 cards, ela ficaria sozinha ao lado de um buraco.
+
+**Limitações:**
+- Sem GPU (desktop sem placa exposta, VM), são 5 cards antes da ficha, e o card Processos fica sozinho na sua linha.
+- Numa janela larga o bastante para três colunas, a ficha ocupa as três.
+

@@ -8,6 +8,7 @@
     subtitle,
     badge,
     actions,
+    wide = false,
     children,
   }: {
     title: string;
@@ -17,11 +18,13 @@
     badge?: { text: string; hint: string };
     /** Controles à direita do título, como as abas das GPUs. */
     actions?: Snippet;
+    /** Ocupa a linha inteira do grid (as duas colunas na largura padrão). */
+    wide?: boolean;
     children?: Snippet;
   } = $props();
 </script>
 
-<section class="card" aria-label={title}>
+<section class="card" class:wide aria-label={title}>
   <header>
     <h2>{title}</h2>
     {#if badge}
@@ -48,6 +51,10 @@
     background: var(--surface);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
+  }
+
+  .wide {
+    grid-column: 1 / -1;
   }
 
   header {

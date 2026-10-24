@@ -25,7 +25,7 @@
   );
 </script>
 
-<MetricCard title="Ficha técnica" value={info.distro ?? "Linux"} subtitle={info.hostname ?? undefined}>
+<MetricCard title="Ficha técnica" value={info.distro ?? "Linux"} subtitle={info.hostname ?? undefined} wide>
   <dl class="rows">
     <div>
       <dt>Processador</dt>
@@ -61,7 +61,11 @@
 </MetricCard>
 
 <style>
+  /* Duas colunas de linhas quando o card ocupa a largura toda; uma na janela estreita. */
   .rows {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+    column-gap: 28px;
     margin: 0;
   }
 

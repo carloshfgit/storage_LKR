@@ -1,6 +1,6 @@
 # PLAN V2 — Aba "Recursos"
 
-Plano de implementação da ideia em [ideia-recursos.md](ideia-recursos.md): uma segunda aba, **Recursos**, com a telemetria do computador em tempo real (CPU, memória, disco, GPU, rede, processos, bateria e ficha técnica), ao lado da aba **Armazenamento**, que já existe.
+Plano de implementação da ideia em [ideia-recursos.md](ideia-recursos.md): uma segunda aba, **Recursos**, com a telemetria do computador em tempo real (CPU, memória, disco, GPU, rede, processos e ficha técnica; a bateria saiu na revisão da Etapa 19, D56), ao lado da aba **Armazenamento**, que já existe.
 
 A numeração continua a do [PLAN.md](PLAN.md) (Etapas 15 a 20), para manter os commits no padrão `feat: etapa N - <descrição>`. As decisões previstas abaixo (D45 a D52) entram no [DECISIONS.md](DECISIONS.md) quando forem implementadas, com o resultado medido. O "como funciona" vai para o [ARCHITECTURE.md](ARCHITECTURE.md) (nova §11) e o progresso para a tabela de status do README.
 
@@ -8,7 +8,7 @@ A numeração continua a do [PLAN.md](PLAN.md) (Etapas 15 a 20), para manter os 
 - Seletor centralizado no topo: **Armazenamento | Recursos**.
 - Cards com gráfico dos últimos 60 s: CPU (total, por núcleo, frequência, temperatura), Memória (RAM, swap/zRAM, pressão), Disco (leitura/gravação em MB/s, temperatura), GPU (uso, VRAM, temperatura, consumo) e Rede (download/upload e total da sessão).
 - "Top 5" processos por CPU, RAM ou disco.
-- Bateria (só em notebook) e ficha técnica.
+- Ficha técnica, na linha inteira do grid (o card Bateria saiu na revisão da Etapa 19, D56).
 - Coleta só com a aba visível: sai da aba ou minimiza a janela, a coleta para.
 
 **Compatibilidade (D52):** o app roda em qualquer Ubuntu suportado, não só na máquina de desenvolvimento.
@@ -38,7 +38,7 @@ A numeração continua a do [PLAN.md](PLAN.md) (Etapas 15 a 20), para manter os 
          ▼
 ┌──────────────────────────── crates/monitor (Rust puro, sem Tauri) ────────────────────┐
 │  Sampler { root, anterior } → sample() -> Sample      system_info() -> SystemInfo     │
-│  cpu.rs · mem.rs · disk_io.rs · net.rs · sensors.rs · gpu/ · battery.rs · procs.rs    │
+│  cpu.rs · mem.rs · disk_io.rs · net.rs · sensors.rs · gpu/ · procs.rs                 │
 │  Leitura direta de /proc e /sys; parsers puros sobre o texto dos arquivos             │
 └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -62,8 +62,6 @@ struct Sample {
     disks: Vec<DiskIo>,               // name, model, kind (nvme|sata|emmc|virtio|…), read_bps, write_bps, temp_c (só discos físicos inteiros)
     net: NetSample,                   // rx_bps, tx_bps, rx_session, tx_session (só interfaces físicas)
     gpus: Vec<GpuSample>,             // name, vendor, busy_pct, vram_used/total, temp_c, power_w, freq_mhz
-    batteries: Vec<BatterySample>,    // uma por BAT*: name, pct, status, energy_now/full, power_w, health_pct, cycles
-    battery_total: Option<BatteryTotal>, // soma das baterias: pct ponderado pela energia, power_w, time_left_s
     procs: Option<Vec<ProcSample>>,   // a cada 2 ticks; None nos outros
     uptime_s: u64,
 }
@@ -171,6 +169,8 @@ Primeira versão visível: o seletor de abas e os cards da Etapa 15 com gráfico
 ---
 
 ## Etapa 17 — Sensores, bateria e ficha técnica
+> A bateria (`battery.rs` e o card) saiu do app na revisão da Etapa 19 (D56). O registro abaixo fica como histórico.
+
 Tudo que depende de `/sys/class/hwmon`, `/sys/class/power_supply` e varia de máquina para máquina.
 - [x] `sensors.rs`: varre `/sys/class/hwmon/hwmon*` uma vez (no `Sampler::new`) e guarda os arquivos de cada sensor; depois só lê `temp*_input`. Ordem de preferência para a **CPU**: `coretemp` (`Package id 0`), `k10temp` (`Tctl`/`Tdie`), `zenpower`, `cpu_thermal` (ARM); sem nenhum, a `thermal_zone` do tipo `x86_pkg_temp`. `acpitz` só como último recurso, marcado como aproximado.
 - [x] Temperatura do **disco**: `nvme` (hwmon ligado a `/sys/block/nvmeXnY/device`) e `drivetemp` (SATA, liga o hwmon ao disco pelo `device`). SATA sem o módulo: "—" com a dica `sudo modprobe drivetemp` (o app só mostra o comando, D44). eMMC, cartão SD, USB e disco de VM: "—" sem dica (não há sensor).
@@ -277,6 +277,13 @@ Uma abstração por fabricante, cada uma com fallback para "não exposto" (D49).
   2. Com "Reduzir animação" ligado no GNOME (Acessibilidade), a reordenação não anima.
   3. Temas claro e escuro, e a janela no mínimo (560 px).
 
+**Revisão (24/10/2026):**
+- **Sem bateria** (D56): o card Bateria e o `battery.rs` saíram; a amostra não lê mais `/sys/class/power_supply`, e a `Sample` perdeu `batteries`/`battery_total` (no Rust e no `api.ts`). Era a leitura que passava pelo EC/ACPI (o `BAT0/present` levava 6–17 ms).
+- **Ficha técnica na linha inteira:** o `MetricCard` ganhou `wide` (`grid-column: 1 / -1`), e as linhas da ficha ficam em duas colunas quando cabem (mínimo de 280 px cada); na janela estreita, uma coluna.
+- Medido com `monitor --count 30`: amostra sem processos em **2,1 ms** (antes 20–30 ms); coletor inteiro a 1 Hz em **0,70%** de um núcleo (antes 1,67%), com a leitura de processos (+10,2 ms) igual. Falta a meta de 0,5% da D51, agora quase só pela leitura de processos e pelo `drivetemp` (quando carregado).
+- 6 testes da bateria removidos (96 no crate; 199 no workspace), clippy limpo, `npm run check` sem erros.
+- ⏳ **Falta conferir:** a ficha técnica na largura toda (duas colunas de linhas) e, na janela no mínimo (560 px), numa coluna só.
+
 ## Etapa 20 — Polimento e pacote 1.1.0
 - [ ] Acessibilidade: cada gráfico com `role="img"` e `aria-label` resumindo o valor atual e o mínimo/máximo do minuto; valores com `aria-live="polite"` limitado (só o card focado), para o leitor de tela não ler tudo a cada segundo.
 - [ ] `prefers-reduced-motion`: gráfico sem transição entre amostras.
@@ -315,7 +322,6 @@ Cada formato tem um teste com árvore falsa de `proc/`/`sys/` (montada a partir 
 | Disco | SATA (com/sem `drivetemp`), NVMe, eMMC/SD, USB, virtio, `md` e `dm` ignorados | SATA sem `drivetemp` |
 | Rede | Cabo, Wi-Fi, os dois juntos, interfaces virtuais e VPN ignoradas, contador reiniciado | _a preencher_ |
 | GPU | AMD dedicada/integrada/suspensa, NVIDIA com/sem `nvidia-smi` e suspensa, `nouveau`, Intel `i915`/`xe`, híbrida, sem GPU, só framebuffer, ARM, virtual, sem `pci.ids` | Intel `i915` (HD 620) + AMD `amdgpu` dedicada (R7 M445, suspensa e ativa) |
-| Bateria | `energy_*`, `charge_*`, duas baterias, sem `full_design`, periférico Bluetooth, desktop sem bateria | `charge_*` (Dell), cheia na tomada |
 | Sessão | X11 e Wayland (pausa ao minimizar), 1366×768, HiDPI 200% | _a preencher_ |
 
 ## Riscos e pontos a validar

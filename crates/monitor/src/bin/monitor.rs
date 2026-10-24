@@ -157,17 +157,6 @@ fn print_line(s: &Sample, cores: bool) {
         mb(s.net.rx_session),
         mb(s.net.tx_session)
     );
-    if let Some(b) = &s.battery_total {
-        line += &format!(
-            " | bateria {} {:?} {}",
-            pct(b.pct),
-            b.status,
-            b.power_w.map_or("—".into(), |w| format!("{w:.1} W"))
-        );
-        if let Some(t) = b.time_left_s {
-            line += &format!(" {}h{:02}", t / 3600, t / 60 % 60);
-        }
-    }
     for g in &s.gpus {
         line += &format!(" | {}", g.spec.card);
         if g.state == GpuState::Suspended {

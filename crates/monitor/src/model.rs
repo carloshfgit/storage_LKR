@@ -12,9 +12,6 @@ pub struct Sample {
     /// Só discos físicos inteiros (sem partições, `loop`, `dm` nem `md`).
     pub disks: Vec<DiskIo>,
     pub net: NetSample,
-    /// Só baterias do sistema (sem mouse e fone Bluetooth); vazio no desktop.
-    pub batteries: Vec<BatterySample>,
-    pub battery_total: Option<BatteryTotal>,
     /// Uma por placa em `/sys/class/drm`; vazio sem GPU (VM, servidor).
     pub gpus: Vec<GpuSample>,
     /// "Top 5" processos: a cada [`PROCS_EVERY`](crate::PROCS_EVERY) amostras,
@@ -128,43 +125,6 @@ pub struct NetIface {
     pub wireless: bool,
     pub rx_bps: Option<f64>,
     pub tx_bps: Option<f64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BatteryStatus {
-    Charging,
-    Discharging,
-    Full,
-    /// Na tomada sem carregar (limite de carga configurado, por exemplo).
-    NotCharging,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct BatterySample {
-    pub name: String,
-    pub model: Option<String>,
-    pub pct: Option<f32>,
-    pub status: BatteryStatus,
-    pub energy_now_wh: Option<f64>,
-    pub energy_full_wh: Option<f64>,
-    pub energy_full_design_wh: Option<f64>,
-    pub power_w: Option<f64>,
-    /// Capacidade atual / capacidade de fábrica.
-    pub health_pct: Option<f32>,
-    /// `None` quando o firmware não conta (informa 0).
-    pub cycles: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct BatteryTotal {
-    /// Ponderado pela energia de cada bateria, como o UPower.
-    pub pct: Option<f32>,
-    pub status: BatteryStatus,
-    pub power_w: Option<f64>,
-    /// Até esvaziar (descarregando) ou até encher (carregando).
-    pub time_left_s: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

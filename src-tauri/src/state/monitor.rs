@@ -157,8 +157,6 @@ mod tests {
                 tx_session: 0,
                 interfaces: Vec::new(),
             },
-            batteries: Vec::new(),
-            battery_total: None,
             gpus: Vec::new(),
             procs: None,
         }
