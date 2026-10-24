@@ -104,7 +104,23 @@ Base do crate `monitor`, só com o que vem de `/proc` e é igual em qualquer má
 - Rodando `target/release/scan /` em paralelo, o monitor mostra a leitura do disco subir.
 - Custo de uma amostra < 1 ms e < 0,5% de um núcleo a 1 Hz (medido por `/proc/self/stat` do próprio CLI depois de 5 min).
 
-**Resultado:** _a preencher._
+**Resultado (23/10/2026, Ubuntu, SSD SATA, 4 threads, Wi-Fi + cabo):**
+
+| Medida | `monitor` | Referência |
+|---|---|---|
+| CPU, 12 amostras com `dd` gravando | diferença de −1,0 a +0,9 p.p. | `mpstat 1` (100 − idle − iowait) |
+| Disco gravado em 12 s | 1.592 MB, pico de 482 MB/s | `iostat -d 1`: 1.594 MB, pico de 478 MB/s |
+| Memória usada | 6.351.151.104 B | `free -b`: 6.351.171.584 B (20 kB de diferença entre as duas leituras) |
+| Rede (Wi-Fi) | ↓ 71,7 kB/s, ↑ 4,7 kB/s | `sar -n DEV 1`: ↓ 71,8 kB/s, ↑ 4,7 kB/s |
+| `scan /` em paralelo | leitura de `sda` sobe para 47–65 MB/s, ocupado 50–64% | — |
+| Custo de uma amostra, laço quente | ≈ 270 µs | meta < 1 ms |
+| Custo a 1 Hz por 5 min (300 amostras) | média 1,07 ms, pior 11,3 ms; **0,10% de um núcleo** | meta < 0,5% |
+
+- 29 testes no crate (`cargo test -p monitor`), workspace inteiro passando, clippy limpo.
+- A primeira versão lia o `/proc` com `fs::read_to_string` e levava 1,7–1,9 ms por amostra: o procfs informa tamanho 0, e a leitura começava com 32 bytes e ia em pedaços. Com a leitura única num buffer reaproveitado, e as interfaces de rede em cache como os discos, o laço quente caiu para cerca de 270 µs (D45).
+- A 1 Hz, a média (1,07 ms) fica um pouco acima de 1 ms porque a CPU desta máquina volta a 800 MHz entre as amostras e cada leitura do `/proc` paga a saída do estado ocioso. A meta que importa, o custo em CPU, ficou em 0,10% de um núcleo, um quinto do limite.
+- A rede foi conferida só com tráfego baixo (cerca de 70 kB/s). Falta repetir com um download grande.
+- O iowait conta como ocioso, como no `top`. Comparado com `100 − idle` do `mpstat`, a diferença durante o `dd` chegava a 36 p.p.
 
 ---
 
